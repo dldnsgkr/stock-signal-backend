@@ -1,0 +1,191 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Market {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique @db.VarChar(10)
+  name   String  @db.VarChar(100)
+  stocks Stock[]
+
+  @@map("markets")
+}
+
+model Stock {
+  id        Int      @id @default(autoincrement())
+  marketId  Int      @map("market_id")
+  symbol    String   @db.VarChar(20)
+  name      String   @db.VarChar(200)
+  sector    String?  @db.VarChar(100)
+  industry  String?  @db.VarChar(100)
+  exchange  String?  @db.VarChar(50)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  market          Market              @relation(fields: [marketId], references: [id])
+  prices          PriceDaily[]
+  financials      FinancialMetrics[]
+  newsRelations   NewsStockRelation[]
+  recommendations Recommendation[]
+
+  @@unique([marketId, symbol], map: "stocks_market_id_symbol_key")
+  @@index([symbol])
+  @@map("stocks")
+}
+
+model PriceDaily {
+  id       Int      @id @default(autoincrement())
+  stockId  Int      @map("stock_id")
+  date     DateTime @db.Date
+  open     Decimal  @db.Decimal(15, 4)
+  high     Decimal  @db.Decimal(15, 4)
+  low      Decimal  @db.Decimal(15, 4)
+  close    Decimal  @db.Decimal(15, 4)
+  volume   BigInt
+  adjClose Decimal? @map("adj_close") @db.Decimal(15, 4)
+
+  stock Stock @relation(fields: [stockId], references: [id])
+
+  @@unique([stockId, date], map: "price_daily_stock_id_date_key")
+  @@index([stockId, date(sort: Desc)])
+  @@map("price_daily")
+}
+
+model FinancialMetrics {
+  id              Int      @id @default(autoincrement())
+  stockId         Int      @map("stock_id")
+  periodType      String   @map("period_type") @db.VarChar(20)
+  periodEnd       DateTime @map("period_end") @db.Date
+  revenue         Decimal? @db.Decimal(20, 2)
+  operatingIncome Decimal? @map("operating_income") @db.Decimal(20, 2)
+  netIncome       Decimal? @map("net_income") @db.Decimal(20, 2)
+  roe             Decimal? @db.Decimal(10, 4)
+  per             Decimal? @db.Decimal(10, 4)
+  pbr             Decimal? @db.Decimal(10, 4)
+  debtRatio       Decimal? @map("debt_ratio") @db.Decimal(10, 4)
+
+  stock Stock @relation(fields: [stockId], references: [id])
+
+  @@unique([stockId, periodType, periodEnd], map: "financial_metrics_stock_id_period_type_period_end_key")
+  @@map("financial_metrics")
+}
+
+model NewsArticle {
+  id             Int       @id @default(autoincrement())
+  source         String    @db.VarChar(100)
+  title          String    @db.VarChar(500)
+  summary        String?   @db.Text
+  url            String    @unique @db.VarChar(1000)
+  publishedAt    DateTime  @map("published_at")
+  sentimentScore Decimal?  @map("sentiment_score") @db.Decimal(5, 4)
+  language       String    @default("en") @db.VarChar(10)
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  stockRelations NewsStockRelation[]
+
+  @@index([publishedAt(sort: Desc)])
+  @@map("news_articles")
+}
+
+model NewsStockRelation {
+  id            Int     @id @default(autoincrement())
+  newsArticleId Int     @map("news_article_id")
+  stockId       Int     @map("stock_id")
+  relevanceScore Decimal @map("relevance_score") @db.Decimal(5, 4)
+
+  article NewsArticle @relation(fields: [newsArticleId], references: [id])
+  stock   Stock       @relation(fields: [stockId], references: [id])
+
+  @@unique([newsArticleId, stockId], map: "news_stock_relations_news_article_id_stock_id_key")
+  @@map("news_stock_relations")
+}
+
+model MacroIndicator {
+  id            Int      @id @default(autoincrement())
+  marketCode    String   @map("market_code") @db.VarChar(10)
+  indicatorType String   @map("indicator_type") @db.VarChar(100)
+  value         Decimal  @db.Decimal(15, 6)
+  observedAt    DateTime @map("observed_at")
+
+  @@unique([marketCode, indicatorType, observedAt], map: "macro_indicators_market_code_indicator_type_observed_at_key")
+  @@index([marketCode, indicatorType, observedAt(sort: Desc)])
+  @@map("macro_indicators")
+}
+
+model ModelVersion {
+  id           Int      @id @default(autoincrement())
+  versionName  String   @unique @map("version_name") @db.VarChar(100)
+  strategyType String   @map("strategy_type") @db.VarChar(100)
+  configJson   Json     @default("{}") @map("config_json")
+  deployedAt   DateTime @default(now()) @map("deployed_at")
+  isActive     Boolean  @default(false) @map("is_active")
+
+  runs RecommendationRun[]
+
+  @@map("model_versions")
+}
+
+model RecommendationRun {
+  id             Int      @id @default(autoincrement())
+  modelVersionId Int      @map("model_version_id")
+  runType        String   @map("run_type") @db.VarChar(20)
+  marketCode     String   @map("market_code") @db.VarChar(10)
+  executedAt     DateTime @default(now()) @map("executed_at")
+  notes          String?  @db.Text
+
+  modelVersion    ModelVersion     @relation(fields: [modelVersionId], references: [id])
+  recommendations Recommendation[]
+
+  @@index([executedAt(sort: Desc)])
+  @@map("recommendation_runs")
+}
+
+model Recommendation {
+  id                  Int      @id @default(autoincrement())
+  recommendationRunId Int      @map("recommendation_run_id")
+  stockId             Int      @map("stock_id")
+  action              String   @db.VarChar(10)
+  score               Decimal  @db.Decimal(8, 4)
+  confidence          Int
+  entryPrice          Decimal  @map("entry_price") @db.Decimal(15, 4)
+  reasonsJson         Json     @default("[]") @map("reasons_json")
+  featureSnapshotJson Json     @default("{}") @map("feature_snapshot_json")
+  scoreDetailJson     Json     @default("{}") @map("score_detail_json")
+  recommendedAt       DateTime @default(now()) @map("recommended_at")
+
+  run    RecommendationRun    @relation(fields: [recommendationRunId], references: [id])
+  stock  Stock                @relation(fields: [stockId], references: [id])
+  result RecommendationResult?
+
+  @@index([recommendedAt(sort: Desc)])
+  @@index([stockId, recommendedAt(sort: Desc)])
+  @@map("recommendations")
+}
+
+model RecommendationResult {
+  id                 Int      @id @default(autoincrement())
+  recommendationId   Int      @unique @map("recommendation_id")
+  return1d           Decimal? @map("return_1d") @db.Decimal(10, 6)
+  return7d           Decimal? @map("return_7d") @db.Decimal(10, 6)
+  return30d          Decimal? @map("return_30d") @db.Decimal(10, 6)
+  benchmarkReturn1d  Decimal? @map("benchmark_return_1d") @db.Decimal(10, 6)
+  benchmarkReturn7d  Decimal? @map("benchmark_return_7d") @db.Decimal(10, 6)
+  benchmarkReturn30d Decimal? @map("benchmark_return_30d") @db.Decimal(10, 6)
+  alpha1d            Decimal? @map("alpha_1d") @db.Decimal(10, 6)
+  alpha7d            Decimal? @map("alpha_7d") @db.Decimal(10, 6)
+  alpha30d           Decimal? @map("alpha_30d") @db.Decimal(10, 6)
+  hit1d              Boolean? @map("hit_1d")
+  hit7d              Boolean? @map("hit_7d")
+  hit30d             Boolean? @map("hit_30d")
+  evaluatedAt        DateTime @default(now()) @updatedAt @map("evaluated_at")
+
+  recommendation Recommendation @relation(fields: [recommendationId], references: [id])
+
+  @@map("recommendation_results")
+}

@@ -1,0 +1,49 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/stock-signal-backend
+
+            echo "=== git pull ==="
+            git pull origin main
+
+            echo "=== pnpm install ==="
+            corepack enable
+            pnpm install --frozen-lockfile
+
+            echo "=== prisma generate & migrate ==="
+            cd apps/api
+            pnpm prisma:generate
+            pnpm prisma migrate deploy
+            cd ~/stock-signal-backend
+
+            echo "=== API build ==="
+            cd apps/api
+            pnpm build
+            cd ~/stock-signal-backend
+
+            echo "=== Python deps ==="
+            cd apps/analysis-service
+            pip install -r requirements.txt
+            cd ~/stock-signal-backend
+
+            echo "=== PM2 restart ==="
+            pm2 reload ecosystem.config.js --env production || pm2 start ecosystem.config.js --env production
+            pm2 save
+
+            echo "=== Done ==="
