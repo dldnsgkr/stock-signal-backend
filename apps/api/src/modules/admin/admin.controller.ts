@@ -63,8 +63,20 @@ export class AdminController {
 
   @Get('runs')
   @ApiOperation({ summary: '최근 추천 실행 이력' })
-  getRecentRuns(@Query('limit') limit = 20) {
-    return this.adminService.getRecentRuns(+limit);
+  getRecentRuns(@Query('limit') limit = 50) {
+    return this.adminService.getRecentRunsDetailed(+limit);
+  }
+
+  @Get('logs')
+  @ApiOperation({ summary: '서버 로그 조회' })
+  getLogs(@Query('service') service = 'api', @Query('lines') lines = 200) {
+    return this.adminService.getLogs(service, +lines);
+  }
+
+  @Get('system')
+  @ApiOperation({ summary: '시스템 상태 조회' })
+  getSystemStatus() {
+    return this.adminService.getSystemStatus();
   }
 
   @Get('model-versions')
