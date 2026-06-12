@@ -23,6 +23,7 @@ jobs:
 
             echo "=== Deploying tag: $GITHUB_REF_NAME ==="
             git fetch --tags
+            git reset --hard
             git checkout $GITHUB_REF_NAME
 
             echo "=== pnpm install ==="
