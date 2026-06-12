@@ -13,7 +13,7 @@ module.exports = {
       },
       autorestart: true,
       watch: false,
-      max_memory_restart: '512M',
+      max_memory_restart: '1500M',
     },
     {
       name: 'stock-signal-analysis',
