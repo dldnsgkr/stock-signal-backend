@@ -26,8 +26,8 @@ jobs:
             git checkout $GITHUB_REF_NAME
 
             echo "=== pnpm install ==="
-            corepack enable
-            pnpm install --frozen-lockfile
+            sudo corepack enable
+            pnpm install
 
             echo "=== prisma generate & migrate ==="
             cd apps/api
@@ -40,9 +40,10 @@ jobs:
             pnpm build
             cd ~/stock-signal-backend
 
-            echo "=== Python deps ==="
+            echo "=== Python venv & deps ==="
             cd apps/analysis-service
-            pip install -r requirements.txt
+            python3 -m venv .venv
+            .venv/bin/pip install -r requirements.txt
             cd ~/stock-signal-backend
 
             echo "=== PM2 zero-downtime reload ==="

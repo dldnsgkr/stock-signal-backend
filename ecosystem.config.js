@@ -17,11 +17,10 @@ module.exports = {
     },
     {
       name: 'stock-signal-analysis',
-      script: 'uvicorn',
+      script: 'apps/analysis-service/.venv/bin/uvicorn',
       args: 'main:app --host 0.0.0.0 --port 8000',
       cwd: 'apps/analysis-service',
-      interpreter: 'python3',
-      interpreter_args: '-m',
+      interpreter: 'none',
       env_production: {
         PYTHONUNBUFFERED: '1',
       },
