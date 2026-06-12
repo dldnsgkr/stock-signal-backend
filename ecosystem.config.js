@@ -3,10 +3,14 @@ module.exports = {
     {
       name: 'stock-signal-api',
       script: 'apps/api/dist/main.js',
+      exec_mode: 'cluster',
+      instances: 2,
+      wait_ready: true,
+      listen_timeout: 10000,
+      kill_timeout: 5000,
       env_production: {
         NODE_ENV: 'production',
       },
-      instances: 1,
       autorestart: true,
       watch: false,
       max_memory_restart: '512M',

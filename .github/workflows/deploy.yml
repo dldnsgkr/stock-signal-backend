@@ -2,25 +2,28 @@ name: Deploy to EC2
 
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to EC2
+      - name: Deploy ${{ github.ref_name }} to EC2
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: GITHUB_REF_NAME
           script: |
             set -e
             cd ~/stock-signal-backend
 
-            echo "=== git pull ==="
-            git pull origin main
+            echo "=== Deploying tag: $GITHUB_REF_NAME ==="
+            git fetch --tags
+            git checkout $GITHUB_REF_NAME
 
             echo "=== pnpm install ==="
             corepack enable
@@ -42,8 +45,8 @@ jobs:
             pip install -r requirements.txt
             cd ~/stock-signal-backend
 
-            echo "=== PM2 restart ==="
+            echo "=== PM2 zero-downtime reload ==="
             pm2 reload ecosystem.config.js --env production || pm2 start ecosystem.config.js --env production
             pm2 save
 
-            echo "=== Done ==="
+            echo "=== Deploy $GITHUB_REF_NAME complete ==="
