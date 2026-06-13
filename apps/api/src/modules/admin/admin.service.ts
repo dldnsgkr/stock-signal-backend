@@ -185,6 +185,39 @@ export class AdminService {
     }
   }
 
+  async getRecentFailures(limit = 30) {
+    const queueMap: Record<string, Queue> = {
+      '전체 파이프라인':  this.pipelineQueue,
+      '시그널 생성':      this.recsQueue,
+      '주가 수집':        this.pricesQueue,
+      '뉴스 수집':        this.newsQueue,
+      '재무 수집':        this.financialsQueue,
+      '종목 동기화':      this.stockListQueue,
+      '거시지표 수집':    this.macroQueue,
+    };
+
+    const failures: any[] = [];
+    for (const [label, queue] of Object.entries(queueMap)) {
+      try {
+        const failed = await queue.getFailed(0, 20);
+        for (const job of failed) {
+          failures.push({
+            queue: label,
+            jobId: String(job.id),
+            market: job.data?.market ?? null,
+            failedAt: job.finishedOn ? new Date(job.finishedOn) : null,
+            reason: job.failedReason ?? 'Unknown error',
+            attemptsMade: job.attemptsMade,
+          });
+        }
+      } catch { /* queue empty or unavailable */ }
+    }
+
+    return failures
+      .sort((a, b) => (b.failedAt?.getTime() ?? 0) - (a.failedAt?.getTime() ?? 0))
+      .slice(0, limit);
+  }
+
   async getRecentRunsDetailed(limit: number) {
     const runs = await this.prisma.recommendationRun.findMany({
       include: {

@@ -55,6 +55,12 @@ export class AdminController {
     return this.adminService.triggerEvaluateRecommendations();
   }
 
+  @Get('jobs/failures')
+  @ApiOperation({ summary: '최근 실패 job 목록' })
+  getRecentFailures(@Query('limit') limit = 30) {
+    return this.adminService.getRecentFailures(+limit);
+  }
+
   @Get('jobs/:queue/:jobId')
   @ApiOperation({ summary: '작업 상태 조회' })
   getJobStatus(@Param('queue') queue: string, @Param('jobId') jobId: string) {
