@@ -1,4 +1,11 @@
 import uvicorn
+from pathlib import Path
+from dotenv import load_dotenv
+
+# pykrx 등 os.getenv() 의존 라이브러리를 위해 먼저 로드
+load_dotenv(Path.home() / ".env")  # EC2: ~/.env
+load_dotenv()                       # 로컬 개발: ./apps/analysis-service/.env
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import collect, analysis, translate
