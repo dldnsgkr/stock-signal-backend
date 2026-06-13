@@ -17,12 +17,12 @@ export class MarketService {
     try {
       const res = await axios.get(
         `${baseUrl}/analysis/investor-trading?${params}`,
-        { timeout: 60000 },
+        { timeout: 60000, validateStatus: () => true },  // 모든 상태코드 허용, 에러 전달
       );
       return res.data;
     } catch (err: any) {
       this.logger.error(`investor-trading failed: ${err.message}`);
-      throw err;
+      return { error: err.message };
     }
   }
 }

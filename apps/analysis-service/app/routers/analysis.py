@@ -147,7 +147,8 @@ async def generate_sell_signals(body: GenerateSellSignalsRequest, db: AsyncSessi
     return JSONResponse(content=_sanitize({"sell_signals": sell_signals}))
 
 
-# 투자자별 컬럼 → 영문 키 매핑
+# 투자자별 컬럼 → 영문 키 매핑 (pykrx 1.x 실제 컬럼명 기준)
+# "연기금 등" 공백 포함 / "연기금등" 공백 없음 양쪽 대응
 _INVESTOR_COL_MAP = {
     "금융투자": "financialInvestment",
     "보험": "insurance",
@@ -155,12 +156,22 @@ _INVESTOR_COL_MAP = {
     "사모": "privateEquity",
     "은행": "bank",
     "기타금융": "otherFinance",
-    "연기금등": "pension",
+    "연기금 등": "pension",
+    "연기금등": "pension",   # 버전별 컬럼명 차이 대응
     "기관합계": "institution",
     "외국인": "foreign",
     "기타": "individual",   # 개인 + 기타법인 합산
     "전체": "total",
 }
+
+
+def _safe_int(val) -> int:
+    """NaN/inf/None 안전 int 변환"""
+    try:
+        f = float(val)
+        return 0 if (math.isnan(f) or math.isinf(f)) else int(f)
+    except (TypeError, ValueError):
+        return 0
 
 
 @router.get("/investor-trading")
@@ -169,8 +180,9 @@ async def get_investor_trading(
     fromdate: Optional[str] = Query(None, description="YYYYMMDD, 기본값 30일 전"),
     todate: Optional[str] = Query(None, description="YYYYMMDD, 기본값 오늘"),
 ):
-    """KRX 투자자별 매매동향 (pykrx 이용)"""
+    """KRX 투자자별 매매동향 (pykrx 이용, 순매수 단일 조회)"""
     try:
+        import pandas as pd
         from pykrx import stock as krx
     except ImportError:
         return JSONResponse(content={"error": "pykrx not installed"}, status_code=500)
@@ -186,40 +198,53 @@ async def get_investor_trading(
         return JSONResponse(content={"error": "market must be KOSPI or KOSDAQ"}, status_code=400)
 
     try:
-        df_net  = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="순매수")
-        df_buy  = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="매수")
-        df_sell = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="매도")
+        # 순매수 1회만 호출 (매수/매도는 UI에서 미사용)
+        df = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="순매수")
     except Exception as e:
-        logger.error(f"pykrx investor-trading error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        logger.error(f"pykrx investor-trading error ({market_code} {fromdate}~{todate}): {e}")
+        return JSONResponse(content={"error": f"KRX 데이터 조회 실패: {e}"}, status_code=500)
 
-    if df_net is None or df_net.empty:
-        return JSONResponse(content={"market": market_code, "fromdate": fromdate, "todate": todate, "data": [], "summary": {}})
+    try:
+        if df is None or df.empty:
+            return JSONResponse(content={
+                "market": market_code, "fromdate": fromdate, "todate": todate,
+                "data": [], "summary": {},
+            })
 
-    rows = []
-    for date_idx in df_net.index:
-        date_str = date_idx.strftime("%Y-%m-%d")
-        row: dict = {"date": date_str}
+        # NaN → 0 일괄 처리
+        df = df.fillna(0)
 
+        # 실제 컬럼 확인 후 매핑 (중복 en_key 는 첫 번째만 사용)
+        seen_en_keys: set = set()
+        col_map: list = []
         for kr_col, en_key in _INVESTOR_COL_MAP.items():
-            net_val  = int(df_net.at[date_idx, kr_col])  if kr_col in df_net.columns  else 0
-            buy_val  = int(df_buy.at[date_idx, kr_col])  if (kr_col in df_buy.columns  and date_idx in df_buy.index)  else 0
-            sell_val = int(df_sell.at[date_idx, kr_col]) if (kr_col in df_sell.columns and date_idx in df_sell.index) else 0
-            row[en_key] = {"net": net_val, "buy": buy_val, "sell": sell_val}
+            if kr_col in df.columns and en_key not in seen_en_keys:
+                col_map.append((kr_col, en_key))
+                seen_en_keys.add(en_key)
 
-        rows.append(row)
+        logger.info(f"pykrx columns: {list(df.columns)}")
 
-    rows.sort(key=lambda x: x["date"], reverse=True)
+        rows = []
+        for date_idx in df.index:
+            date_str = date_idx.strftime("%Y-%m-%d")
+            row: dict = {"date": date_str}
+            for kr_col, en_key in col_map:
+                row[en_key] = {"net": _safe_int(df.at[date_idx, kr_col]), "buy": 0, "sell": 0}
+            rows.append(row)
 
-    # 기간 합산 순매수 요약
-    summary: dict = {}
-    for en_key in _INVESTOR_COL_MAP.values():
-        summary[en_key] = sum(r[en_key]["net"] for r in rows if en_key in r)
+        rows.sort(key=lambda x: x["date"], reverse=True)
 
-    return JSONResponse(content=_sanitize({
-        "market": market_code,
-        "fromdate": fromdate,
-        "todate": todate,
-        "data": rows,
-        "summary": summary,
-    }))
+        summary: dict = {en_key: sum(_safe_int(r.get(en_key, {}).get("net", 0)) for r in rows)
+                         for _, en_key in col_map}
+
+        return JSONResponse(content=_sanitize({
+            "market": market_code,
+            "fromdate": fromdate,
+            "todate": todate,
+            "data": rows,
+            "summary": summary,
+        }))
+
+    except Exception as e:
+        logger.error(f"investor-trading processing error: {e}", exc_info=True)
+        return JSONResponse(content={"error": f"데이터 처리 오류: {e}"}, status_code=500)
