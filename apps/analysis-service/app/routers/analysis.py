@@ -161,47 +161,48 @@ def _safe_int(val) -> int:
         return 0
 
 
-# MDCSTAT02203 (투자자별 거래실적 일별추이 상세) TRDVAL 컬럼 → 영문 키 매핑
-# 순서 확인: pykrx source + KRX 표준 투자자 표시 순서
+# MDCSTAT02202 (투자자별 거래실적 일별추이 일반, inqTpCd=2) TRDVAL 컬럼 → 영문 키 매핑
+# pykrx source 확인: TRDVAL1=기관합계, TRDVAL2=외국인, TRDVAL3=개인, TRDVAL4=기타법인+기타
 _KRX_COL_MAP = [
-    ("TRDVAL1",   "financialInvestment"),  # 금융투자
-    ("TRDVAL2",   "insurance"),            # 보험
-    ("TRDVAL3",   "trustFund"),            # 투신
-    ("TRDVAL4",   "privateEquity"),        # 사모
-    ("TRDVAL5",   "bank"),                 # 은행
-    ("TRDVAL6",   "otherFinance"),         # 기타금융
-    ("TRDVAL7",   "pension"),              # 연기금 등
-    ("TRDVAL8",   "foreign"),              # 외국인
-    ("TRDVAL9",   "individual"),           # 개인
-    ("TRDVAL10",  "otherCorp"),            # 기타법인
-    ("TRDVAL11",  "other"),                # 기타
-    ("TRDVAL_TOT","total"),                # 전체합계
+    ("TRDVAL1",    "institution"),  # 기관합계
+    ("TRDVAL2",    "foreign"),      # 외국인
+    ("TRDVAL3",    "individual"),   # 개인
+    ("TRDVAL4",    "otherCorp"),    # 기타법인+기타
+    ("TRDVAL_TOT", "total"),        # 전체합계
 ]
-_INSTITUTION_KEYS = ["financialInvestment", "insurance", "trustFund", "privateEquity", "bank", "otherFinance", "pension"]
 
 
 def _krx_fetch_investor_daily(mkt_id: str, strt_dd: str, end_dd: str) -> list:
-    """KRX MDCSTAT02203 직접 POST 호출 — 투자자별 거래실적 일별추이 (상세, 순매수, 거래대금)"""
-    resp = _requests.post(
+    """KRX MDCSTAT02202 직접 POST 호출 — 투자자별 거래실적 일별추이 (일반, 순매수, 거래대금)
+    pykrx Post 클래스와 동일한 헤더 사용 (X-Requested-With 필수)
+    """
+    session = _requests.Session()
+    # KRX 세션 초기화 (JSESSIONID 쿠키 획득)
+    session.get(
+        "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd",
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+        timeout=10,
+    )
+    resp = session.post(
         "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
         headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://data.krx.co.kr/",
-            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd",
+            "X-Requested-With": "XMLHttpRequest",
         },
         data={
-            "bld":          "dbms/MDC/STAT/standard/MDCSTAT02203",
-            "locale":       "ko_KR",
-            "mktId":        mkt_id,   # STK=KOSPI / KSQ=KOSDAQ
-            "etf":          "",
-            "etn":          "",
-            "elw":          "",
-            "strtDd":       strt_dd,
-            "endDd":        end_dd,
-            "trdVolVal":    "2",      # 거래대금
-            "askBid":       "3",      # 순매수
-            "detailView":   "1",
-            "csvxls_isNo":  "false",
+            "bld":         "dbms/MDC/STAT/standard/MDCSTAT02202",
+            "locale":      "ko_KR",
+            "mktId":       mkt_id,   # STK=KOSPI / KSQ=KOSDAQ
+            "etf":         "",
+            "etn":         "",
+            "elw":         "",
+            "strtDd":      strt_dd,
+            "endDd":       end_dd,
+            "inqTpCd":     "2",      # 일반(4그룹) 조회 타입
+            "trdVolVal":   "2",      # 거래대금
+            "askBid":      "3",      # 순매수
+            "csvxls_isNo": "false",
         },
         timeout=30,
     )
@@ -250,11 +251,6 @@ async def get_investor_trading(
         row: dict = {"date": date_str}
         for col_key, en_key in _KRX_COL_MAP:
             row[en_key] = {"net": _safe_int(item.get(col_key, 0)), "buy": 0, "sell": 0}
-
-        # 기관합계 = TRDVAL1~7 합산 (MDCSTAT02203은 기관합계 컬럼 없음)
-        inst_net = sum(row[k]["net"] for k in _INSTITUTION_KEYS)
-        row["institution"] = {"net": inst_net, "buy": 0, "sell": 0}
-
         rows.append(row)
 
     rows.sort(key=lambda x: x["date"], reverse=True)
