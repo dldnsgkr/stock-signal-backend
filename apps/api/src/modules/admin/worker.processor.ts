@@ -412,63 +412,53 @@ export class PipelineProcessor {
 export class EvaluationProcessor {
   private readonly logger = new Logger(EvaluationProcessor.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   @Process('evaluate')
   async handleEvaluate(_job: Job) {
     this.logger.log('Evaluating recommendation results...');
 
-    const cutoff1d = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
-    const cutoff7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const cutoff30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const cutoff1d  = new Date(now.getTime() - 1  * 86400000);
+    const cutoff7d  = new Date(now.getTime() - 7  * 86400000);
+    const cutoff30d = new Date(now.getTime() - 30 * 86400000);
 
-    const pending1d = await this.prisma.recommendation.findMany({
+    // (1) result 없는 신규 (1일+), (2) return7d 미집계 (7일+), (3) return30d 미집계 (30일+)
+    const recs = await this.prisma.recommendation.findMany({
       where: {
-        recommendedAt: { lte: cutoff1d },
-        result: { is: null },
+        OR: [
+          { recommendedAt: { lte: cutoff1d },  result: { is: null } },
+          { recommendedAt: { lte: cutoff7d },  result: { is: { return7d: null } } },
+          { recommendedAt: { lte: cutoff30d }, result: { is: { return30d: null } } },
+        ],
       },
-      include: { stock: true },
+      include: { stock: true, result: true },
     });
 
+    this.logger.log(`Found ${recs.length} recommendations needing evaluation`);
     let evaluated = 0;
 
-    for (const rec of pending1d) {
-      const targetDate1d = new Date(rec.recommendedAt.getTime() + 1 * 24 * 60 * 60 * 1000);
-      const targetDate7d = new Date(rec.recommendedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
-      const targetDate30d = new Date(rec.recommendedAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+    for (const rec of recs) {
+      const entry    = Number(rec.entryPrice);
+      const existing = rec.result;
 
       const [price1d, price7d, price30d] = await Promise.all([
-        this.getClosestPrice(rec.stockId, targetDate1d),
-        new Date() > cutoff7d ? this.getClosestPrice(rec.stockId, targetDate7d) : null,
-        new Date() > cutoff30d ? this.getClosestPrice(rec.stockId, targetDate30d) : null,
+        existing?.return1d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 86400000))       : Promise.resolve(null),
+        existing?.return7d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 7  * 86400000)) : Promise.resolve(null),
+        existing?.return30d == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 30 * 86400000)) : Promise.resolve(null),
       ]);
 
-      const entryPrice = Number(rec.entryPrice);
-      const r1d = price1d ? (Number(price1d) - entryPrice) / entryPrice : null;
-      const r7d = price7d ? (Number(price7d) - entryPrice) / entryPrice : null;
-      const r30d = price30d ? (Number(price30d) - entryPrice) / entryPrice : null;
+      const updates: Record<string, number | boolean | null> = {};
+      if (price1d  !== null) { const r = (price1d  - entry) / entry; updates.return1d  = r; updates.hit1d  = r > 0; }
+      if (price7d  !== null) { const r = (price7d  - entry) / entry; updates.return7d  = r; updates.hit7d  = r > 0; }
+      if (price30d !== null) { const r = (price30d - entry) / entry; updates.return30d = r; updates.hit30d = r > 0; }
+
+      if (Object.keys(updates).length === 0) continue;
 
       await this.prisma.recommendationResult.upsert({
-        where: { recommendationId: rec.id },
-        create: {
-          recommendationId: rec.id,
-          return1d: r1d,
-          return7d: r7d,
-          return30d: r30d,
-          hit1d: r1d !== null ? r1d > 0 : null,
-          hit7d: r7d !== null ? r7d > 0 : null,
-          hit30d: r30d !== null ? r30d > 0 : null,
-        },
-        update: {
-          return1d: r1d,
-          return7d: r7d,
-          return30d: r30d,
-          hit1d: r1d !== null ? r1d > 0 : null,
-          hit7d: r7d !== null ? r7d > 0 : null,
-          hit30d: r30d !== null ? r30d > 0 : null,
-        },
+        where:  { recommendationId: rec.id },
+        create: { recommendationId: rec.id, ...updates },
+        update: updates,
       });
       evaluated++;
     }
@@ -478,11 +468,9 @@ export class EvaluationProcessor {
   }
 
   private async getClosestPrice(stockId: number, targetDate: Date): Promise<number | null> {
+    if (targetDate > new Date()) return null; // 아직 해당 날짜가 오지 않음
     const price = await this.prisma.priceDaily.findFirst({
-      where: {
-        stockId,
-        date: { lte: targetDate },
-      },
+      where: { stockId, date: { lte: targetDate } },
       orderBy: { date: 'desc' },
     });
     return price ? Number(price.close) : null;
