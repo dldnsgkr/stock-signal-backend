@@ -256,4 +256,168 @@ export class PerformanceService {
       hit30d: r.hit_30d,
     }));
   }
+
+  async getPortfolioSimulation(
+    market = 'US',
+    period: '30d' | '90d' | '180d' = '90d',
+    horizon: '7d' | '30d' = '7d',
+  ) {
+    const days = period === '30d' ? 30 : period === '90d' ? 90 : 180;
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    type SimRow = {
+      id: number;
+      symbol: string;
+      name: string;
+      sector: string | null;
+      score: string;
+      confidence: number;
+      entry_price: string;
+      recommended_at: Date;
+      run_executed_at: Date;
+      run_id: number;
+      return_7d: string | null;
+      return_30d: string | null;
+      benchmark_return_7d: string | null;
+      benchmark_return_30d: string | null;
+      alpha_7d: string | null;
+      alpha_30d: string | null;
+      hit_7d: boolean | null;
+      hit_30d: boolean | null;
+      score_rank: bigint;
+    };
+
+    const rows = await this.prisma.$queryRaw<SimRow[]>`
+      WITH ranked AS (
+        SELECT
+          r.id,
+          s.symbol,
+          s.name,
+          s.sector,
+          r.score,
+          r.confidence,
+          r.entry_price,
+          r.recommended_at,
+          rr.executed_at          AS run_executed_at,
+          rr.id                   AS run_id,
+          res.return_7d,
+          res.return_30d,
+          res.benchmark_return_7d,
+          res.benchmark_return_30d,
+          res.alpha_7d,
+          res.alpha_30d,
+          res.hit_7d,
+          res.hit_30d,
+          ROW_NUMBER() OVER (
+            PARTITION BY r.recommendation_run_id
+            ORDER BY r.score DESC
+          ) AS score_rank
+        FROM recommendations r
+        JOIN recommendation_runs rr  ON rr.id  = r.recommendation_run_id
+        JOIN stocks s                ON s.id   = r.stock_id
+        JOIN recommendation_results res ON res.recommendation_id = r.id
+        WHERE rr.market_code = ${market}
+          AND rr.executed_at >= ${since}
+          AND r.action = 'BUY'
+          AND res.return_7d IS NOT NULL
+      )
+      SELECT * FROM ranked
+      ORDER BY run_executed_at DESC, score_rank ASC
+    `;
+
+    const isHorizon7d = horizon === '7d';
+
+    const toPosition = (r: SimRow) => ({
+      id: r.id,
+      symbol: r.symbol,
+      name: r.name,
+      sector: r.sector,
+      score: Number(r.score),
+      confidence: r.confidence,
+      entryPrice: Number(r.entry_price),
+      recommendedAt: r.recommended_at,
+      return: isHorizon7d
+        ? (r.return_7d != null ? Number(r.return_7d) : null)
+        : (r.return_30d != null ? Number(r.return_30d) : null),
+      benchmark: isHorizon7d
+        ? (r.benchmark_return_7d != null ? Number(r.benchmark_return_7d) : null)
+        : (r.benchmark_return_30d != null ? Number(r.benchmark_return_30d) : null),
+      alpha: isHorizon7d
+        ? (r.alpha_7d != null ? Number(r.alpha_7d) : null)
+        : (r.alpha_30d != null ? Number(r.alpha_30d) : null),
+      hit: isHorizon7d ? r.hit_7d : r.hit_30d,
+      scoreRank: Number(r.score_rank),
+    });
+
+    const computePortfolio = (positions: ReturnType<typeof toPosition>[]) => {
+      const withReturn = positions.filter(p => p.return !== null);
+      if (withReturn.length === 0) return null;
+
+      const returns = withReturn.map(p => p.return as number);
+      const benchmarks = withReturn.filter(p => p.benchmark !== null).map(p => p.benchmark as number);
+      const hits = withReturn.filter(p => p.hit !== null);
+
+      const mean = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+      const std = (arr: number[]) => {
+        const m = mean(arr);
+        return Math.sqrt(arr.reduce((a, b) => a + (b - m) ** 2, 0) / arr.length);
+      };
+
+      const portfolioReturn = mean(returns);
+      const benchmarkReturn = benchmarks.length > 0 ? mean(benchmarks) : null;
+      const alpha = benchmarkReturn !== null ? portfolioReturn - benchmarkReturn : null;
+      const stdDev = std(returns);
+      const sharpe = stdDev > 0 ? portfolioReturn / stdDev : null;
+      const hitRate = hits.length > 0 ? hits.filter(p => p.hit).length / hits.length : null;
+
+      const sorted = [...returns].sort((a, b) => a - b);
+      return {
+        count: withReturn.length,
+        portfolioReturn: Math.round(portfolioReturn * 10000) / 10000,
+        benchmarkReturn: benchmarkReturn !== null ? Math.round(benchmarkReturn * 10000) / 10000 : null,
+        alpha: alpha !== null ? Math.round(alpha * 10000) / 10000 : null,
+        stdDev: Math.round(stdDev * 10000) / 10000,
+        sharpe: sharpe !== null ? Math.round(sharpe * 100) / 100 : null,
+        hitRate: hitRate !== null ? Math.round(hitRate * 1000) / 1000 : null,
+        bestReturn:  sorted[sorted.length - 1],
+        worstReturn: sorted[0],
+      };
+    };
+
+    const all = rows.map(toPosition);
+    const top5  = all.filter(p => p.scoreRank <= 5);
+    const top10 = all.filter(p => p.scoreRank <= 10);
+    const top20 = all.filter(p => p.scoreRank <= 20);
+
+    // 상위 종목만 포지션 테이블에 표시 (최대 200개)
+    const positions = top20.slice(0, 200);
+
+    // 수익률 분포 (10% 구간)
+    const allReturns = all.map(p => p.return).filter((r): r is number => r !== null);
+    const buckets: Record<string, number> = {};
+    for (const r of allReturns) {
+      const bucket = Math.floor(r * 100 / 5) * 5; // 5% 단위
+      const key = `${bucket >= 0 ? '+' : ''}${bucket}%`;
+      buckets[key] = (buckets[key] ?? 0) + 1;
+    }
+    const distribution = Object.entries(buckets)
+      .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
+      .map(([range, count]) => ({ range, count }));
+
+    return {
+      market,
+      period,
+      horizon,
+      strategies: {
+        top5:  computePortfolio(top5),
+        top10: computePortfolio(top10),
+        top20: computePortfolio(top20),
+        all:   computePortfolio(all),
+      },
+      positions,
+      distribution,
+      totalRuns: new Set(rows.map(r => r.run_id)).size,
+    };
+  }
 }

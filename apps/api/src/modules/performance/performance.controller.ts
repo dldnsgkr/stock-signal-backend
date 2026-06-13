@@ -46,6 +46,19 @@ export class PerformanceController {
     return this.performanceService.getBySector(market, period);
   }
 
+  @Get('simulation')
+  @ApiOperation({ summary: '포트폴리오 시뮬레이션' })
+  @ApiQuery({ name: 'market',  required: false, enum: ['US', 'KR'] })
+  @ApiQuery({ name: 'period',  required: false, enum: ['30d', '90d', '180d'] })
+  @ApiQuery({ name: 'horizon', required: false, enum: ['7d', '30d'] })
+  getPortfolioSimulation(
+    @Query('market')  market:  string = 'US',
+    @Query('period')  period:  '30d' | '90d' | '180d' = '90d',
+    @Query('horizon') horizon: '7d' | '30d' = '7d',
+  ) {
+    return this.performanceService.getPortfolioSimulation(market, period, horizon);
+  }
+
   @Get('recommendations')
   @ApiOperation({ summary: '개별 추천 성과 목록' })
   @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
