@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bull';
 import { PrismaModule } from './prisma/prisma.module';
+import { AlertModule } from './modules/alert/alert.module';
 import { WorkerModule } from './modules/worker/worker.module';
 
 @Module({
@@ -24,6 +25,7 @@ import { WorkerModule } from './modules/worker/worker.module';
       }),
     }),
     PrismaModule,
+    AlertModule,
     WorkerModule,
   ],
 })

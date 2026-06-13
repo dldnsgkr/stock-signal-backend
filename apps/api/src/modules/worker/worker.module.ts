@@ -10,9 +10,12 @@ import {
   MacroProcessor,
   PipelineProcessor,
 } from '../admin/worker.processor';
+import { QueueMonitorService } from './queue-monitor.service';
+import { AlertModule } from '../alert/alert.module';
 
 @Module({
   imports: [
+    AlertModule,
     BullModule.registerQueue(
       { name: 'collect-stock-list' },
       { name: 'collect-prices' },
@@ -24,8 +27,8 @@ import {
       {
         name: 'run-pipeline',
         settings: {
-          lockDuration: 7200000,   // 2시간 lock
-          lockRenewTime: 300000,   // 5분마다 갱신
+          lockDuration: 7200000,
+          lockRenewTime: 300000,
           stalledInterval: 300000,
           maxStalledCount: 0,
         },
@@ -41,6 +44,7 @@ import {
     EvaluationProcessor,
     MacroProcessor,
     PipelineProcessor,
+    QueueMonitorService,
   ],
 })
 export class WorkerModule {}

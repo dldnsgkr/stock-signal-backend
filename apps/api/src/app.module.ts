@@ -9,6 +9,7 @@ import { PerformanceModule } from './modules/performance/performance.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 import { HealthModule } from './modules/health/health.module';
+import { AlertModule } from './modules/alert/alert.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { HealthModule } from './modules/health/health.module';
       }),
     }),
     PrismaModule,
+    AlertModule,
     HealthModule,
     StocksModule,
     RecommendationsModule,
