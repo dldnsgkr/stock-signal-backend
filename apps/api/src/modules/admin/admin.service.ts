@@ -154,6 +154,130 @@ export class AdminService {
     }
   }
 
+  async getDataHealth() {
+    const now = new Date();
+
+    // 시장별 마지막 추천 실행
+    type RunRow = { market_code: string; last_run: Date; run_count: bigint };
+    const runRows = await this.prisma.$queryRaw<RunRow[]>`
+      SELECT market_code, MAX(executed_at) AS last_run, COUNT(*) AS run_count
+      FROM recommendation_runs
+      WHERE executed_at >= NOW() - INTERVAL '30 days'
+      GROUP BY market_code
+    `;
+
+    // 시장별 마지막 가격 수집일
+    type PriceRow = { market_code: string; last_date: Date; stock_count: bigint };
+    const priceRows = await this.prisma.$queryRaw<PriceRow[]>`
+      SELECT m.code AS market_code, MAX(pd.date) AS last_date, COUNT(DISTINCT pd.stock_id) AS stock_count
+      FROM price_daily pd
+      JOIN stocks s ON s.id = pd.stock_id
+      JOIN markets m ON m.id = s.market_id
+      WHERE pd.date >= NOW() - INTERVAL '30 days'
+      GROUP BY m.code
+    `;
+
+    // 최근 24h / 7d 뉴스 수집 건수
+    type NewsRow = { period: string; count: bigint };
+    const newsRows = await this.prisma.$queryRaw<NewsRow[]>`
+      SELECT '24h' AS period, COUNT(*) AS count FROM news_articles WHERE created_at >= NOW() - INTERVAL '24 hours'
+      UNION ALL
+      SELECT '7d'  AS period, COUNT(*) AS count FROM news_articles WHERE created_at >= NOW() - INTERVAL '7 days'
+    `;
+
+    // 재무 데이터 최신 period_end
+    type FinRow = { market_code: string; latest_period: Date; count: bigint };
+    const finRows = await this.prisma.$queryRaw<FinRow[]>`
+      SELECT m.code AS market_code, MAX(fm.period_end) AS latest_period, COUNT(*) AS count
+      FROM financial_metrics fm
+      JOIN stocks s ON s.id = fm.stock_id
+      JOIN markets m ON m.id = s.market_id
+      GROUP BY m.code
+    `;
+
+    // Bull 큐 현재 상태
+    const queueStats: Record<string, any> = {};
+    const queues: Record<string, Queue> = {
+      'run-pipeline':              this.pipelineQueue,
+      'generate-recommendations':  this.recsQueue,
+      'collect-prices':            this.pricesQueue,
+      'collect-news':              this.newsQueue,
+      'collect-financials':        this.financialsQueue,
+    };
+    for (const [name, q] of Object.entries(queues)) {
+      try {
+        const [waiting, active, failed] = await Promise.all([
+          q.getWaitingCount(), q.getActiveCount(), q.getFailedCount(),
+        ]);
+        queueStats[name] = { waiting, active, failed };
+      } catch { queueStats[name] = null; }
+    }
+
+    const hoursAgo = (d: Date | null) =>
+      d ? Math.round((now.getTime() - new Date(d).getTime()) / 3600000) : null;
+
+    const newsMap = Object.fromEntries(newsRows.map(r => [r.period, Number(r.count)]));
+
+    const markets = ['US', 'KR'].map(code => {
+      const run   = runRows.find(r => r.market_code === code);
+      const price = priceRows.find(r => r.market_code === code);
+      const fin   = finRows.find(r => r.market_code === code);
+
+      const signalAgeH  = hoursAgo(run?.last_run ?? null);
+      const priceAgeDays = price?.last_date
+        ? Math.round((now.getTime() - new Date(price.last_date).getTime()) / 86400000)
+        : null;
+
+      return {
+        market: code,
+        signal: {
+          lastRunAt: run?.last_run ?? null,
+          ageHours: signalAgeH,
+          runCount30d: Number(run?.run_count ?? 0),
+          status: signalAgeH === null ? 'unknown'
+                : signalAgeH > 72 ? 'danger'
+                : signalAgeH > 48 ? 'warn'
+                : 'ok',
+        },
+        price: {
+          lastDate: price?.last_date ?? null,
+          ageDays: priceAgeDays,
+          stockCount: Number(price?.stock_count ?? 0),
+          status: priceAgeDays === null ? 'unknown'
+                : priceAgeDays > 5 ? 'danger'
+                : priceAgeDays > 2 ? 'warn'
+                : 'ok',
+        },
+        financial: {
+          latestPeriod: fin?.latest_period ?? null,
+          count: Number(fin?.count ?? 0),
+          status: fin ? 'ok' : 'unknown',
+        },
+      };
+    });
+
+    const totalFailed = Object.values(queueStats).reduce(
+      (sum, q) => sum + (q?.failed ?? 0), 0,
+    );
+
+    return {
+      checkedAt: now,
+      markets,
+      news: {
+        last24h: newsMap['24h'] ?? 0,
+        last7d:  newsMap['7d']  ?? 0,
+        status: (newsMap['24h'] ?? 0) === 0 ? 'warn' : 'ok',
+      },
+      queues: queueStats,
+      summary: {
+        hasWarning: markets.some(m => m.signal.status !== 'ok' || m.price.status !== 'ok')
+                    || (newsMap['24h'] ?? 0) === 0,
+        hasDanger:  markets.some(m => m.signal.status === 'danger' || m.price.status === 'danger'),
+        totalFailedJobs: totalFailed,
+      },
+    };
+  }
+
   async getSystemStatus() {
     try {
       const [pm2Out, memOut, diskOut, uptimeOut] = await Promise.all([

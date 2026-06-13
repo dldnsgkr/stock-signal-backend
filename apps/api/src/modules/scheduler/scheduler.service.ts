@@ -37,40 +37,50 @@ export class SchedulerService {
     await this.adminService.triggerEvaluateRecommendations();
   }
 
-  // ── 데이터 지연 감지 (평일 오전 9시 KST) ─────────────────
+  // ── 헬스체크 (평일 오전 9시 KST) ────────────────────────────
   @Cron('0 0 9 * * 1-5', { timeZone: 'Asia/Seoul' })
-  async checkDataFreshness() {
-    this.logger.log('[Scheduler] 데이터 신선도 점검 시작');
+  async runDailyHealthCheck() {
+    this.logger.log('[Scheduler] 일일 헬스체크 시작');
+    try {
+      const health = await this.adminService.getDataHealth();
+      const { summary, markets, news } = health;
 
-    for (const market of ['US', 'KR']) {
-      const lastRun = await this.prisma.recommendationRun.findFirst({
-        where: { marketCode: market },
-        orderBy: { executedAt: 'desc' },
-      });
+      // 위험 항목 로그
+      for (const m of markets) {
+        if (m.signal.status === 'danger') {
+          this.logger.error(
+            `[헬스체크] ${m.market} 시그널 ${m.signal.ageHours}시간 미업데이트 — 파이프라인 확인 필요`,
+          );
+        } else if (m.signal.status === 'warn') {
+          this.logger.warn(
+            `[헬스체크] ${m.market} 시그널 ${m.signal.ageHours}시간 미업데이트`,
+          );
+        }
 
-      if (!lastRun) {
-        await this.alert.send({
-          type: 'warning',
-          title: '분석 데이터 없음',
-          market,
-          detail: '아직 한 번도 파이프라인이 성공하지 않았습니다.',
-        });
-        continue;
+        if (m.price.status === 'danger') {
+          this.logger.error(
+            `[헬스체크] ${m.market} 가격 데이터 ${m.price.ageDays}일 미수집`,
+          );
+        } else if (m.price.status === 'warn') {
+          this.logger.warn(
+            `[헬스체크] ${m.market} 가격 데이터 ${m.price.ageDays}일 미수집`,
+          );
+        }
       }
 
-      const hoursAgo = (Date.now() - lastRun.executedAt.getTime()) / 3600000;
-
-      if (hoursAgo > STALE_THRESHOLD_HOURS) {
-        const daysAgo = (hoursAgo / 24).toFixed(1);
-        await this.alert.send({
-          type: 'warning',
-          title: '데이터 지연 경고',
-          market,
-          detail: `마지막 분석: ${lastRun.executedAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} (${daysAgo}일 전)\n파이프라인이 정상 실행되고 있는지 확인하세요.`,
-        });
-      } else {
-        this.logger.log(`[${market}] 최근 분석: ${hoursAgo.toFixed(1)}시간 전 — 정상`);
+      if (news.status === 'warn') {
+        this.logger.warn('[헬스체크] 최근 24h 뉴스 수집 0건');
       }
+
+      if (summary.totalFailedJobs > 0) {
+        this.logger.warn(`[헬스체크] 실패 Job ${summary.totalFailedJobs}건 누적`);
+      }
+
+      if (!summary.hasWarning && !summary.hasDanger) {
+        this.logger.log('[헬스체크] 모든 데이터 정상');
+      }
+    } catch (e) {
+      this.logger.error(`[헬스체크] 실행 오류: ${e}`);
     }
   }
 }

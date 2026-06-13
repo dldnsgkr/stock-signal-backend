@@ -73,6 +73,12 @@ export class AdminController {
     return this.adminService.getRecentRunsDetailed(+limit);
   }
 
+  @Get('health')
+  @ApiOperation({ summary: '데이터 헬스체크' })
+  getDataHealth() {
+    return this.adminService.getDataHealth();
+  }
+
   @Get('logs')
   @ApiOperation({ summary: '서버 로그 조회' })
   getLogs(@Query('service') service = 'api', @Query('lines') lines = 200) {
