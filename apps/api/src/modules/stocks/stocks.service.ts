@@ -86,6 +86,27 @@ export class StocksService {
     });
   }
 
+  async getScoreHistory(symbol: string, days = 90) {
+    const stock = await this.findBySymbol(symbol);
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    const recs = await this.prisma.recommendation.findMany({
+      where: {
+        stockId: stock.id,
+        recommendedAt: { gte: since },
+      },
+      select: { score: true, action: true, recommendedAt: true },
+      orderBy: { recommendedAt: 'asc' },
+    });
+
+    return recs.map(r => ({
+      date: r.recommendedAt,
+      score: Number(r.score),
+      action: r.action,
+    }));
+  }
+
   async getMarketSummary(marketCode: string) {
     const recentPrices = await this.prisma.priceDaily.findMany({
       where: {

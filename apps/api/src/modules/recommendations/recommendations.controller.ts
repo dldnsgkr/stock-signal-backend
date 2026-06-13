@@ -31,6 +31,17 @@ export class RecommendationsController {
     return this.recommendationsService.getHistory(market, +days, +page, +pageSize);
   }
 
+  @Get('sell-signals')
+  @ApiOperation({ summary: '최근 SELL 시그널 목록' })
+  @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  getSellSignals(
+    @Query('market') market = 'US',
+    @Query('limit') limit = 20,
+  ) {
+    return this.recommendationsService.getSellSignals(market, +limit);
+  }
+
   @Get('stock/:symbol')
   @ApiOperation({ summary: '종목별 추천 이력 조회' })
   getByStock(@Param('symbol') symbol: string, @Query('limit') limit = 10) {

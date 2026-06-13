@@ -53,4 +53,11 @@ export class StocksController {
   getRecommendations(@Param('symbol') symbol: string, @Query('limit') limit = 10) {
     return this.stocksService.getRecommendations(symbol, +limit);
   }
+
+  @Get(':symbol/score-history')
+  @ApiOperation({ summary: '종목 점수 트렌드 이력' })
+  @ApiQuery({ name: 'days', required: false, type: Number })
+  getScoreHistory(@Param('symbol') symbol: string, @Query('days') days = 90) {
+    return this.stocksService.getScoreHistory(symbol, +days);
+  }
 }

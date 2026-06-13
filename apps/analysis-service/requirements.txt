@@ -21,3 +21,4 @@ finance-datareader>=0.9.0
 lxml>=5.0.0
 feedparser>=6.0.0
 requests>=2.32.0
+pykrx>=1.0.45

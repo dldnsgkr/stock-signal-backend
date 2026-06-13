@@ -80,6 +80,42 @@ export class RecommendationsService {
     };
   }
 
+  async getSellSignals(market: string, limit = 20) {
+    const sellSignals = await this.prisma.sellSignal.findMany({
+      where: {
+        buyRecommendation: {
+          run: { marketCode: market },
+        },
+      },
+      include: {
+        buyRecommendation: {
+          include: {
+            stock: { include: { market: true } },
+          },
+        },
+      },
+      orderBy: { generatedAt: 'desc' },
+      take: limit,
+    });
+
+    return sellSignals.map(s => ({
+      id: s.id,
+      stock: {
+        symbol: s.buyRecommendation.stock.symbol,
+        name: s.buyRecommendation.stock.name,
+        sector: s.buyRecommendation.stock.sector,
+        market: s.buyRecommendation.stock.market?.code,
+      },
+      buyScore: Number(s.buyRecommendation.score),
+      currentScore: Number(s.currentScore),
+      entryPrice: Number(s.entryPrice),
+      exitPrice: s.exitPrice ? Number(s.exitPrice) : null,
+      reasons: s.reasons as string[],
+      buyDate: s.buyRecommendation.recommendedAt,
+      sellDate: s.generatedAt,
+    }));
+  }
+
   async getByStock(symbol: string, limit = 10) {
     const data = await this.prisma.recommendation.findMany({
       where: { stock: { symbol: symbol.toUpperCase() } },

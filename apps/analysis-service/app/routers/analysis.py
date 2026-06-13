@@ -1,11 +1,12 @@
 import logging
 import math
-from fastapi import APIRouter, Depends
+import datetime
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from app.database import get_db
 from app.models.db_models import Stock, Market
 from app.engine.feature_builder import build_features
@@ -144,3 +145,81 @@ async def generate_sell_signals(body: GenerateSellSignalsRequest, db: AsyncSessi
     )
 
     return JSONResponse(content=_sanitize({"sell_signals": sell_signals}))
+
+
+# 투자자별 컬럼 → 영문 키 매핑
+_INVESTOR_COL_MAP = {
+    "금융투자": "financialInvestment",
+    "보험": "insurance",
+    "투신": "trustFund",
+    "사모": "privateEquity",
+    "은행": "bank",
+    "기타금융": "otherFinance",
+    "연기금등": "pension",
+    "기관합계": "institution",
+    "외국인": "foreign",
+    "기타": "individual",   # 개인 + 기타법인 합산
+    "전체": "total",
+}
+
+
+@router.get("/investor-trading")
+async def get_investor_trading(
+    market: str = Query("KOSPI", description="KOSPI 또는 KOSDAQ"),
+    fromdate: Optional[str] = Query(None, description="YYYYMMDD, 기본값 30일 전"),
+    todate: Optional[str] = Query(None, description="YYYYMMDD, 기본값 오늘"),
+):
+    """KRX 투자자별 매매동향 (pykrx 이용)"""
+    try:
+        from pykrx import stock as krx
+    except ImportError:
+        return JSONResponse(content={"error": "pykrx not installed"}, status_code=500)
+
+    today = datetime.date.today()
+    if not todate:
+        todate = today.strftime("%Y%m%d")
+    if not fromdate:
+        fromdate = (today - datetime.timedelta(days=30)).strftime("%Y%m%d")
+
+    market_code = market.upper()
+    if market_code not in ("KOSPI", "KOSDAQ"):
+        return JSONResponse(content={"error": "market must be KOSPI or KOSDAQ"}, status_code=400)
+
+    try:
+        df_net  = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="순매수")
+        df_buy  = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="매수")
+        df_sell = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="매도")
+    except Exception as e:
+        logger.error(f"pykrx investor-trading error: {e}")
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+    if df_net is None or df_net.empty:
+        return JSONResponse(content={"market": market_code, "fromdate": fromdate, "todate": todate, "data": [], "summary": {}})
+
+    rows = []
+    for date_idx in df_net.index:
+        date_str = date_idx.strftime("%Y-%m-%d")
+        row: dict = {"date": date_str}
+
+        for kr_col, en_key in _INVESTOR_COL_MAP.items():
+            net_val  = int(df_net.at[date_idx, kr_col])  if kr_col in df_net.columns  else 0
+            buy_val  = int(df_buy.at[date_idx, kr_col])  if (kr_col in df_buy.columns  and date_idx in df_buy.index)  else 0
+            sell_val = int(df_sell.at[date_idx, kr_col]) if (kr_col in df_sell.columns and date_idx in df_sell.index) else 0
+            row[en_key] = {"net": net_val, "buy": buy_val, "sell": sell_val}
+
+        rows.append(row)
+
+    rows.sort(key=lambda x: x["date"], reverse=True)
+
+    # 기간 합산 순매수 요약
+    summary: dict = {}
+    for en_key in _INVESTOR_COL_MAP.values():
+        summary[en_key] = sum(r[en_key]["net"] for r in rows if en_key in r)
+
+    return JSONResponse(content=_sanitize({
+        "market": market_code,
+        "fromdate": fromdate,
+        "todate": todate,
+        "data": rows,
+        "summary": summary,
+    }))
