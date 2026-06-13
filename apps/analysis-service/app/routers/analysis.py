@@ -216,8 +216,9 @@ async def get_investor_trading(
     except Exception as e:
         err_str = str(e)
         logger.error(f"KRX investor-trading error ({market_upper} {fromdate}~{todate}): {err_str}")
-        # KRX 2026년 이후 인증 필요 — 명확한 안내 반환
-        if "LOGOUT" in err_str or "JSON" in err_str or "400" in err_str:
+        # KRX 2026년 이후 인증 필요 — LOGOUT 응답이 JSON 파싱 실패로 도달
+        # resp.json()이 "LOGOUT" 텍스트를 파싱하면 "Expecting value: line 1 column 1" 발생
+        if any(kw in err_str for kw in ("LOGOUT", "Expecting value", "column 1", "400 Client", "JSONDecode")):
             return JSONResponse(content={
                 "error": "KRX 인증 필요",
                 "detail": "KRX 데이터 포털(data.krx.co.kr)이 2026년부터 로그인을 요구합니다. "
