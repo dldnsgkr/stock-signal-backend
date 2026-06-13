@@ -48,8 +48,17 @@ jobs:
             .venv/bin/pip install -r requirements.txt
             cd ~/stock-signal-backend
 
-            echo "=== PM2 zero-downtime reload ==="
-            pm2 reload ecosystem.config.js --env production || pm2 start ecosystem.config.js --env production
+            echo "=== PM2 reload: API only (worker keeps running) ==="
+            pm2 reload stock-signal-api || pm2 start ecosystem.config.js --only stock-signal-api --env production
+
+            echo "=== PM2 start worker if not running ==="
+            pm2 describe stock-signal-worker > /dev/null 2>&1 \
+              && echo "worker already running — skipping restart" \
+              || pm2 start ecosystem.config.js --only stock-signal-worker --env production
+
+            echo "=== PM2 reload analysis ==="
+            pm2 reload stock-signal-analysis || pm2 start ecosystem.config.js --only stock-signal-analysis --env production
+
             pm2 save
 
             echo "=== Deploy $GITHUB_REF_NAME complete ==="

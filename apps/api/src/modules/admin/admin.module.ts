@@ -2,8 +2,9 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bull';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
-import { WorkerProcessor, StockListProcessor, FinancialProcessor, NewsProcessor, RecommendationProcessor, EvaluationProcessor, MacroProcessor, PipelineProcessor } from './worker.processor';
 
+// Processors는 worker 프로세스(main.worker.ts)에서만 등록
+// 여기서는 job을 큐에 넣기 위한 InjectQueue 선언만 유지
 @Module({
   imports: [
     BullModule.registerQueue(
@@ -14,19 +15,11 @@ import { WorkerProcessor, StockListProcessor, FinancialProcessor, NewsProcessor,
       { name: 'generate-recommendations' },
       { name: 'evaluate-recommendations' },
       { name: 'collect-macro' },
-      {
-        name: 'run-pipeline',
-        settings: {
-          lockDuration: 7200000,   // 2시간 lock (파이프라인이 최대 2시간 걸릴 수 있음)
-          lockRenewTime: 300000,   // 5분마다 갱신
-          stalledInterval: 300000, // 5분마다 stall 체크
-          maxStalledCount: 0,      // stall 즉시 실패 (좀비 방지)
-        },
-      },
+      { name: 'run-pipeline' },
     ),
   ],
   controllers: [AdminController],
-  providers: [AdminService, WorkerProcessor, StockListProcessor, FinancialProcessor, NewsProcessor, RecommendationProcessor, EvaluationProcessor, MacroProcessor, PipelineProcessor],
+  providers: [AdminService],
   exports: [AdminService],
 })
 export class AdminModule {}

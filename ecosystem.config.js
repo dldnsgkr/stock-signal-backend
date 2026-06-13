@@ -16,6 +16,20 @@ module.exports = {
       max_memory_restart: '1500M',
     },
     {
+      name: 'stock-signal-worker',
+      script: 'apps/api/dist/main.worker.js',
+      exec_mode: 'fork',
+      instances: 1,
+      // 파이프라인이 최대 2시간이므로 graceful shutdown 충분히 대기
+      kill_timeout: 30000,
+      env_production: {
+        NODE_ENV: 'production',
+      },
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1500M',
+    },
+    {
       name: 'stock-signal-analysis',
       script: 'apps/analysis-service/.venv/bin/uvicorn',
       args: 'main:app --host 0.0.0.0 --port 8000',
