@@ -25,42 +25,64 @@ export class AdminService {
   ) {}
 
   async triggerCollectStockList(market = 'US') {
-    const job = await this.stockListQueue.add('collect', { market }, { attempts: 2, timeout: 120000 });
+    const job = await this.stockListQueue.add('collect', { market }, {
+      attempts: 3, timeout: 120000,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
     return { jobId: job.id, status: 'queued', message: `Stock list sync queued for ${market}` };
   }
 
   async triggerCollectPrices(market = 'US') {
-    const job = await this.pricesQueue.add('collect', { market }, { attempts: 3 });
+    const job = await this.pricesQueue.add('collect', { market }, {
+      attempts: 4,
+      backoff: { type: 'exponential', delay: 10000 },
+    });
     return { jobId: job.id, status: 'queued', message: `Price collection queued for ${market}` };
   }
 
   async triggerCollectNews(market = 'US') {
-    const job = await this.newsQueue.add('collect', { market }, { attempts: 3 });
+    const job = await this.newsQueue.add('collect', { market }, {
+      attempts: 4,
+      backoff: { type: 'exponential', delay: 10000 },
+    });
     return { jobId: job.id, status: 'queued', message: `News collection queued for ${market}` };
   }
 
   async triggerCollectFinancials(market = 'US') {
-    const job = await this.financialsQueue.add('collect', { market }, { attempts: 3 });
+    const job = await this.financialsQueue.add('collect', { market }, {
+      attempts: 4,
+      backoff: { type: 'exponential', delay: 10000 },
+    });
     return { jobId: job.id, status: 'queued', message: `Financial collection queued for ${market}` };
   }
 
   async triggerGenerateRecommendations(market = 'US') {
-    const job = await this.recsQueue.add('generate', { market }, { attempts: 2 });
+    const job = await this.recsQueue.add('generate', { market }, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 15000 },
+    });
     return { jobId: job.id, status: 'queued', message: `Recommendation generation queued for ${market}` };
   }
 
   async triggerRunPipeline(market = 'US') {
+    // 파이프라인은 오케스트레이터 — 재시도 없음, 자식 job이 각자 retry 처리
     const job = await this.pipelineQueue.add('run', { market }, { attempts: 1 });
     return { jobId: job.id, status: 'queued', message: `Full pipeline queued for ${market}` };
   }
 
   async triggerCollectMacro(market = 'US') {
-    const job = await this.macroQueue.add('collect', { market }, { attempts: 3 });
+    const job = await this.macroQueue.add('collect', { market }, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
     return { jobId: job.id, status: 'queued', message: `Macro collection queued for ${market}` };
   }
 
   async triggerEvaluateRecommendations() {
-    const job = await this.evalQueue.add('evaluate', {}, { attempts: 3 });
+    const job = await this.evalQueue.add('evaluate', {}, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
     return { jobId: job.id, status: 'queued', message: 'Recommendation evaluation queued' };
   }
 
@@ -216,12 +238,12 @@ export class AdminService {
     const hoursAgo = (d: Date | null) =>
       d ? Math.round((now.getTime() - new Date(d).getTime()) / 3600000) : null;
 
-    const newsMap = Object.fromEntries(newsRows.map(r => [r.period, Number(r.count)]));
+    const newsMap = Object.fromEntries(newsRows.map((r: NewsRow) => [r.period, Number(r.count)]));
 
     const markets = ['US', 'KR'].map(code => {
-      const run   = runRows.find(r => r.market_code === code);
-      const price = priceRows.find(r => r.market_code === code);
-      const fin   = finRows.find(r => r.market_code === code);
+      const run   = runRows.find((r: RunRow)   => r.market_code === code);
+      const price = priceRows.find((r: PriceRow) => r.market_code === code);
+      const fin   = finRows.find((r: FinRow)   => r.market_code === code);
 
       const signalAgeH  = hoursAgo(run?.last_run ?? null);
       const priceAgeDays = price?.last_date
@@ -357,7 +379,7 @@ export class AdminService {
     `;
 
     const priceIssues = [
-      ...priceAnomalies.map(r => ({
+      ...priceAnomalies.map((r: PriceAnomalyRow) => ({
         type: 'price_spike' as const,
         severity: Number(r.change_ratio) > 0.8 ? 'danger' : 'warn',
         symbol: r.symbol,
@@ -365,7 +387,7 @@ export class AdminService {
         detail: `${(Number(r.change_ratio) * 100).toFixed(1)}% 급변 (${Number(r.prev_close).toFixed(2)} → ${Number(r.close).toFixed(2)})`,
         date: r.date,
       })),
-      ...zeroPrices.map(r => ({
+      ...zeroPrices.map((r: ZeroPriceRow) => ({
         type: 'zero_price' as const,
         severity: 'danger' as const,
         symbol: r.symbol,
@@ -375,7 +397,7 @@ export class AdminService {
       })),
     ];
 
-    const finIssues = finAnomalies.map(r => {
+    const finIssues = finAnomalies.map((r: FinAnomalyRow) => {
       const flags: string[] = [];
       if (r.roe && Math.abs(Number(r.roe)) > 5)  flags.push(`ROE ${(Number(r.roe) * 100).toFixed(0)}%`);
       if (r.per && (Number(r.per) < 0 || Number(r.per) > 500)) flags.push(`PER ${Number(r.per).toFixed(1)}`);
@@ -478,7 +500,7 @@ export class AdminService {
     });
 
     // 각 run의 실패 여부: 추천 수가 0이면 실패로 간주
-    return runs.map(run => ({
+    return runs.map((run: (typeof runs)[0]) => ({
       id: run.id,
       marketCode: run.marketCode,
       executedAt: run.executedAt,

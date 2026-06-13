@@ -58,7 +58,7 @@ export class StocksService {
       orderBy: { article: { publishedAt: 'desc' } },
       take: limit,
     });
-    return relations.map((r) => ({
+    return relations.map((r: typeof relations[0]) => ({
       ...r.article,
       relevanceScore: r.relevanceScore,
     }));

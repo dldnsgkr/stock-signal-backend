@@ -4,27 +4,12 @@ import { Job, Queue } from 'bull';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import axios from 'axios';
+import { throwForRetryPolicy } from '../../common/job-errors';
 
-// FastAPI 호출 헬퍼 — 500 응답 시 최대 3회 재시도
+// FastAPI 호출 헬퍼 — 단일 시도, 재시도는 Bull backoff에 위임
 async function callAnalysis(url: string, data: object, timeoutMs = 600000): Promise<any> {
-  const maxRetries = 3;
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await axios.post(url, data, { timeout: timeoutMs });
-      return res.data;
-    } catch (err: unknown) {
-      lastErr = err;
-      const status = (err as any)?.response?.status;
-      // 5xx 에러만 재시도, 4xx는 즉시 실패
-      if (status && status < 500) throw err;
-      if (attempt < maxRetries) {
-        const wait = attempt * 3000;
-        await new Promise(r => setTimeout(r, wait));
-      }
-    }
-  }
-  throw lastErr;
+  const res = await axios.post(url, data, { timeout: timeoutMs });
+  return res.data;
 }
 
 const PRICE_BATCH = 300;
@@ -59,13 +44,17 @@ export class WorkerProcessor {
     this.logger.log(`Total active stocks for ${market}: ${total} (cap: ${cap})`);
     let offset = 0;
     let totalCollected = 0;
-    while (offset < cap) {
-      await safeProgress(job, Math.round((offset / cap) * 100));
-      const data = await callAnalysis(`${analysisUrl}/collect/prices`, { market, offset, limit: PRICE_BATCH });
-      totalCollected += data.collected ?? 0;
-      this.logger.log(`Price batch offset=${offset}: ${JSON.stringify(data)}`);
-      offset += PRICE_BATCH;
-      if ((data.total_in_batch ?? 0) === 0) break;
+    try {
+      while (offset < cap) {
+        await safeProgress(job, Math.round((offset / cap) * 100));
+        const data = await callAnalysis(`${analysisUrl}/collect/prices`, { market, offset, limit: PRICE_BATCH });
+        totalCollected += data.collected ?? 0;
+        this.logger.log(`Price batch offset=${offset}: ${JSON.stringify(data)}`);
+        offset += PRICE_BATCH;
+        if ((data.total_in_batch ?? 0) === 0) break;
+      }
+    } catch (err) {
+      throwForRetryPolicy(err, `collect-prices/${market} offset=${offset}`);
     }
     await safeProgress(job, 100);
     this.logger.log(`Price collection done for ${market}: ${totalCollected} rows total`);
@@ -89,9 +78,7 @@ export class StockListProcessor {
       this.logger.log(`Stock list sync done: ${JSON.stringify(data)}`);
       return data;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Stock list sync failed: ${msg}`);
-      throw err;
+      throwForRetryPolicy(err, `collect-stock-list/${market}`);
     }
   }
 }
@@ -115,13 +102,17 @@ export class FinancialProcessor {
     this.logger.log(`Financials: ${total} total, cap at ${cap}`);
     let offset = 0;
     let totalCollected = 0;
-    while (offset < cap) {
-      await safeProgress(job, Math.round((offset / cap) * 100));
-      const data = await callAnalysis(`${analysisUrl}/collect/financials`, { market, offset, limit: FINANCIAL_BATCH });
-      totalCollected += data.collected ?? 0;
-      this.logger.log(`Financial batch offset=${offset}: ${JSON.stringify(data)}`);
-      offset += FINANCIAL_BATCH;
-      if ((data.total_in_batch ?? 0) === 0) break;
+    try {
+      while (offset < cap) {
+        await safeProgress(job, Math.round((offset / cap) * 100));
+        const data = await callAnalysis(`${analysisUrl}/collect/financials`, { market, offset, limit: FINANCIAL_BATCH });
+        totalCollected += data.collected ?? 0;
+        this.logger.log(`Financial batch offset=${offset}: ${JSON.stringify(data)}`);
+        offset += FINANCIAL_BATCH;
+        if ((data.total_in_batch ?? 0) === 0) break;
+      }
+    } catch (err) {
+      throwForRetryPolicy(err, `collect-financials/${market} offset=${offset}`);
     }
     await safeProgress(job, 100);
     this.logger.log(`Financial collection done for ${market}: ${totalCollected} collected`);
@@ -148,13 +139,17 @@ export class NewsProcessor {
     this.logger.log(`News: ${total} total, cap at ${cap}`);
     let offset = 0;
     let totalCollected = 0;
-    while (offset < cap) {
-      await safeProgress(job, Math.round((offset / cap) * 100));
-      const data = await callAnalysis(`${analysisUrl}/collect/news`, { market, offset, limit: NEWS_BATCH });
-      totalCollected += data.collected ?? 0;
-      this.logger.log(`News batch offset=${offset}: ${JSON.stringify(data)}`);
-      offset += NEWS_BATCH;
-      if ((data.total_in_batch ?? 0) === 0) break;
+    try {
+      while (offset < cap) {
+        await safeProgress(job, Math.round((offset / cap) * 100));
+        const data = await callAnalysis(`${analysisUrl}/collect/news`, { market, offset, limit: NEWS_BATCH });
+        totalCollected += data.collected ?? 0;
+        this.logger.log(`News batch offset=${offset}: ${JSON.stringify(data)}`);
+        offset += NEWS_BATCH;
+        if ((data.total_in_batch ?? 0) === 0) break;
+      }
+    } catch (err) {
+      throwForRetryPolicy(err, `collect-news/${market} offset=${offset}`);
     }
     await safeProgress(job, 100);
     this.logger.log(`News collection done for ${market}: ${totalCollected} articles`);
@@ -178,7 +173,12 @@ export class RecommendationProcessor {
 
     try {
       const analysisUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
-      const responseData = await callAnalysis(`${analysisUrl}/analysis/generate-signals`, { market });
+      let responseData: any;
+      try {
+        responseData = await callAnalysis(`${analysisUrl}/analysis/generate-signals`, { market });
+      } catch (err) {
+        throwForRetryPolicy(err, `generate-recommendations/${market}`);
+      }
       const { recommendations, modelVersion, runNotes } = responseData;
 
       let mv = await this.prisma.modelVersion.findUnique({
@@ -267,9 +267,7 @@ export class MacroProcessor {
       this.logger.log(`Macro collection done: ${JSON.stringify(data)}`);
       return data;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Macro collection failed: ${msg}`);
-      throw err;
+      throwForRetryPolicy(err, `collect-macro/${market}`);
     }
   }
 }
@@ -308,7 +306,10 @@ export class PipelineProcessor {
     try { await job.update({ market, currentStep: 'stock-list' }); } catch {}
     await safeProgress(job, 0);
     this.logger.log(`[Pipeline] Phase 1: stock list`);
-    const slJob = await this.stockListQueue.add('collect', { market }, { attempts: 2, timeout: 120000 });
+    const slJob = await this.stockListQueue.add('collect', { market }, {
+      attempts: 3, timeout: 120000,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
     await slJob.finished();
     await safeProgress(job, 15);
 
@@ -316,10 +317,10 @@ export class PipelineProcessor {
     try { await job.update({ market, currentStep: 'data-collection' }); } catch {}
     this.logger.log(`[Pipeline] Phase 2: parallel data collection`);
     const [pJob, nJob, fJob, mJob] = await Promise.all([
-      this.pricesQueue.add('collect', { market }, { attempts: 2 }),
-      this.newsQueue.add('collect', { market }, { attempts: 2 }),
-      this.financialsQueue.add('collect', { market }, { attempts: 2 }),
-      this.macroQueue.add('collect', { market }, { attempts: 2 }),
+      this.pricesQueue.add('collect',     { market }, { attempts: 4, backoff: { type: 'exponential', delay: 10000 } }),
+      this.newsQueue.add('collect',       { market }, { attempts: 4, backoff: { type: 'exponential', delay: 10000 } }),
+      this.financialsQueue.add('collect', { market }, { attempts: 4, backoff: { type: 'exponential', delay: 10000 } }),
+      this.macroQueue.add('collect',      { market }, { attempts: 3, backoff: { type: 'exponential', delay: 5000  } }),
     ]);
 
     // job.finished() 대신 15초 폴링 사용:
@@ -351,7 +352,10 @@ export class PipelineProcessor {
     // Phase 3: 추천 시그널 생성
     try { await job.update({ market, currentStep: 'recommendations' }); } catch {}
     this.logger.log(`[Pipeline] Phase 3: recommendations`);
-    const rJob = await this.recsQueue.add('generate', { market }, { attempts: 2 });
+    const rJob = await this.recsQueue.add('generate', { market }, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 15000 },
+    });
     await rJob.finished();
     await safeProgress(job, 100);
 

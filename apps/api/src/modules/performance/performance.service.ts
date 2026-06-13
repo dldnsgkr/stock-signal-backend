@@ -85,7 +85,7 @@ export class PerformanceService {
       ORDER BY mv.deployed_at DESC
     `;
 
-    return rows.map((row) => {
+    return rows.map((row: VersionRow) => {
       const withResults = Number(row.with_results);
       return {
         versionName: row.version_name,
@@ -131,7 +131,7 @@ export class PerformanceService {
       ORDER BY week ASC
     `;
 
-    return rows.map(r => ({
+    return rows.map((r: TimelineRow) => ({
       week: r.week.toISOString().slice(0, 10),
       avgReturn7d: r.avg_return_7d != null ? Number(r.avg_return_7d) : null,
       avgBenchmark7d: r.avg_benchmark_7d != null ? Number(r.avg_benchmark_7d) : null,
@@ -173,7 +173,7 @@ export class PerformanceService {
       ORDER BY avg_return_7d DESC NULLS LAST
     `;
 
-    return rows.map(r => ({
+    return rows.map((r: SectorRow) => ({
       sector: r.sector ?? '기타',
       total: Number(r.total),
       hitRate: Number(r.total) > 0 ? Number(r.hit_count) / Number(r.total) : 0,
@@ -237,7 +237,7 @@ export class PerformanceService {
       LIMIT ${limit}
     `;
 
-    return rows.map(r => ({
+    return rows.map((r: RecRow) => ({
       id: r.id,
       symbol: r.symbol,
       name: r.name,
@@ -385,16 +385,17 @@ export class PerformanceService {
       };
     };
 
+    type Position = ReturnType<typeof toPosition>;
     const all = rows.map(toPosition);
-    const top5  = all.filter(p => p.scoreRank <= 5);
-    const top10 = all.filter(p => p.scoreRank <= 10);
-    const top20 = all.filter(p => p.scoreRank <= 20);
+    const top5  = all.filter((p: Position) => p.scoreRank <= 5);
+    const top10 = all.filter((p: Position) => p.scoreRank <= 10);
+    const top20 = all.filter((p: Position) => p.scoreRank <= 20);
 
     // 상위 종목만 포지션 테이블에 표시 (최대 200개)
     const positions = top20.slice(0, 200);
 
     // 수익률 분포 (10% 구간)
-    const allReturns = all.map(p => p.return).filter((r): r is number => r !== null);
+    const allReturns = all.map((p: Position) => p.return).filter((r: number | null): r is number => r !== null);
     const buckets: Record<string, number> = {};
     for (const r of allReturns) {
       const bucket = Math.floor(r * 100 / 5) * 5; // 5% 단위
@@ -417,7 +418,7 @@ export class PerformanceService {
       },
       positions,
       distribution,
-      totalRuns: new Set(rows.map(r => r.run_id)).size,
+      totalRuns: new Set(rows.map((r: SimRow) => r.run_id)).size,
     };
   }
 }
