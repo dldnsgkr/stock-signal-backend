@@ -1,6 +1,7 @@
 import logging
 import math
 import datetime
+import requests as _requests
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -147,31 +148,65 @@ async def generate_sell_signals(body: GenerateSellSignalsRequest, db: AsyncSessi
     return JSONResponse(content=_sanitize({"sell_signals": sell_signals}))
 
 
-# 투자자별 컬럼 → 영문 키 매핑 (pykrx 1.x 실제 컬럼명 기준)
-# "연기금 등" 공백 포함 / "연기금등" 공백 없음 양쪽 대응
-_INVESTOR_COL_MAP = {
-    "금융투자": "financialInvestment",
-    "보험": "insurance",
-    "투신": "trustFund",
-    "사모": "privateEquity",
-    "은행": "bank",
-    "기타금융": "otherFinance",
-    "연기금 등": "pension",
-    "연기금등": "pension",   # 버전별 컬럼명 차이 대응
-    "기관합계": "institution",
-    "외국인": "foreign",
-    "기타": "individual",   # 개인 + 기타법인 합산
-    "전체": "total",
-}
-
-
 def _safe_int(val) -> int:
-    """NaN/inf/None 안전 int 변환"""
+    """NaN/inf/None/콤마문자열 안전 int 변환"""
     try:
+        if isinstance(val, str):
+            val = val.replace(",", "").replace(" ", "").strip()
+            if not val or val == "-":
+                return 0
         f = float(val)
         return 0 if (math.isnan(f) or math.isinf(f)) else int(f)
     except (TypeError, ValueError):
         return 0
+
+
+# MDCSTAT02203 (투자자별 거래실적 일별추이 상세) TRDVAL 컬럼 → 영문 키 매핑
+# 순서 확인: pykrx source + KRX 표준 투자자 표시 순서
+_KRX_COL_MAP = [
+    ("TRDVAL1",   "financialInvestment"),  # 금융투자
+    ("TRDVAL2",   "insurance"),            # 보험
+    ("TRDVAL3",   "trustFund"),            # 투신
+    ("TRDVAL4",   "privateEquity"),        # 사모
+    ("TRDVAL5",   "bank"),                 # 은행
+    ("TRDVAL6",   "otherFinance"),         # 기타금융
+    ("TRDVAL7",   "pension"),              # 연기금 등
+    ("TRDVAL8",   "foreign"),              # 외국인
+    ("TRDVAL9",   "individual"),           # 개인
+    ("TRDVAL10",  "otherCorp"),            # 기타법인
+    ("TRDVAL11",  "other"),                # 기타
+    ("TRDVAL_TOT","total"),                # 전체합계
+]
+_INSTITUTION_KEYS = ["financialInvestment", "insurance", "trustFund", "privateEquity", "bank", "otherFinance", "pension"]
+
+
+def _krx_fetch_investor_daily(mkt_id: str, strt_dd: str, end_dd: str) -> list:
+    """KRX MDCSTAT02203 직접 POST 호출 — 투자자별 거래실적 일별추이 (상세, 순매수, 거래대금)"""
+    resp = _requests.post(
+        "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://data.krx.co.kr/",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data={
+            "bld":          "dbms/MDC/STAT/standard/MDCSTAT02203",
+            "locale":       "ko_KR",
+            "mktId":        mkt_id,   # STK=KOSPI / KSQ=KOSDAQ
+            "etf":          "",
+            "etn":          "",
+            "elw":          "",
+            "strtDd":       strt_dd,
+            "endDd":        end_dd,
+            "trdVolVal":    "2",      # 거래대금
+            "askBid":       "3",      # 순매수
+            "detailView":   "1",
+            "csvxls_isNo":  "false",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("output", [])
 
 
 @router.get("/investor-trading")
@@ -180,90 +215,60 @@ async def get_investor_trading(
     fromdate: Optional[str] = Query(None, description="YYYYMMDD, 기본값 30일 전"),
     todate: Optional[str] = Query(None, description="YYYYMMDD, 기본값 오늘"),
 ):
-    """KRX 투자자별 매매동향 (pykrx 이용, 순매수 단일 조회)"""
-    try:
-        import pandas as pd
-        from pykrx import stock as krx
-    except ImportError:
-        return JSONResponse(content={"error": "pykrx not installed"}, status_code=500)
-
+    """KRX 투자자별 매매동향 — pykrx 우회, KRX MDCSTAT02203 직접 호출 (순매수 거래대금)"""
     today = datetime.date.today()
     if not todate:
         todate = today.strftime("%Y%m%d")
     if not fromdate:
         fromdate = (today - datetime.timedelta(days=30)).strftime("%Y%m%d")
 
-    market_code = market.upper()
-    if market_code not in ("KOSPI", "KOSDAQ"):
+    market_upper = market.upper()
+    if market_upper not in ("KOSPI", "KOSDAQ"):
         return JSONResponse(content={"error": "market must be KOSPI or KOSDAQ"}, status_code=400)
 
+    mkt_id = "STK" if market_upper == "KOSPI" else "KSQ"
+
     try:
-        # pykrx 1.x: on 파라미터 없음, MultiIndex(투자자, 매도/매수/순매수) 반환
-        df_all = krx.get_market_trading_value_by_investor(fromdate, todate, market_code)
+        output = _krx_fetch_investor_daily(mkt_id, fromdate, todate)
     except Exception as e:
-        logger.error(f"pykrx investor-trading error ({market_code} {fromdate}~{todate}): {e}")
+        logger.error(f"KRX API error ({market_upper} {fromdate}~{todate}): {e}")
         return JSONResponse(content={"error": f"KRX 데이터 조회 실패: {e}"}, status_code=500)
 
-    try:
-        if df_all is None or df_all.empty:
-            return JSONResponse(content={
-                "market": market_code, "fromdate": fromdate, "todate": todate,
-                "data": [], "summary": {},
-            })
+    if not output:
+        return JSONResponse(content={"market": market_upper, "fromdate": fromdate, "todate": todate, "data": [], "summary": {}})
 
-        # NaN → 0 일괄 처리
-        df_all = df_all.fillna(0)
+    if output:
+        logger.info(f"KRX response sample keys: {list(output[0].keys())}")
 
-        # MultiIndex(투자자type, 매도/매수/순매수) → 순매수 슬라이스
-        if isinstance(df_all.columns, pd.MultiIndex):
-            level_vals_0 = df_all.columns.get_level_values(0).tolist()
-            level_vals_1 = df_all.columns.get_level_values(1).tolist()
-            logger.info(f"pykrx MultiIndex level0 sample: {list(set(level_vals_0))[:5]}, level1 sample: {list(set(level_vals_1))[:5]}")
+    rows = []
+    for item in output:
+        date_raw = item.get("TRD_DD", "")
+        date_str = date_raw.replace("/", "-").strip()
+        if not date_str:
+            continue
 
-            if "순매수" in level_vals_1:
-                df = df_all.xs("순매수", axis=1, level=1)
-            elif "순매수" in level_vals_0:
-                df = df_all.xs("순매수", axis=1, level=0)
-            else:
-                # fallback: 마지막 level1 값 사용
-                last_l1 = list(set(level_vals_1))[-1]
-                df = df_all.xs(last_l1, axis=1, level=1)
-                logger.warning(f"순매수 column not found, falling back to: {last_l1}")
-        else:
-            df = df_all
-            logger.info(f"pykrx flat columns: {list(df.columns)}")
+        row: dict = {"date": date_str}
+        for col_key, en_key in _KRX_COL_MAP:
+            row[en_key] = {"net": _safe_int(item.get(col_key, 0)), "buy": 0, "sell": 0}
 
-        # 실제 컬럼 확인 후 매핑 (중복 en_key 는 첫 번째만 사용)
-        seen_en_keys: set = set()
-        col_map: list = []
-        for kr_col, en_key in _INVESTOR_COL_MAP.items():
-            if kr_col in df.columns and en_key not in seen_en_keys:
-                col_map.append((kr_col, en_key))
-                seen_en_keys.add(en_key)
+        # 기관합계 = TRDVAL1~7 합산 (MDCSTAT02203은 기관합계 컬럼 없음)
+        inst_net = sum(row[k]["net"] for k in _INSTITUTION_KEYS)
+        row["institution"] = {"net": inst_net, "buy": 0, "sell": 0}
 
-        logger.info(f"pykrx mapped columns: {col_map}")
+        rows.append(row)
 
-        rows = []
-        for date_idx in df.index:
-            date_str = date_idx.strftime("%Y-%m-%d")
-            row: dict = {"date": date_str}
-            for kr_col, en_key in col_map:
-                row[en_key] = {"net": _safe_int(df.at[date_idx, kr_col]), "buy": 0, "sell": 0}
-            rows.append(row)
+    rows.sort(key=lambda x: x["date"], reverse=True)
 
-        rows.sort(key=lambda x: x["date"], reverse=True)
+    all_en_keys = [en_key for _, en_key in _KRX_COL_MAP] + ["institution"]
+    summary: dict = {
+        en_key: sum(r.get(en_key, {}).get("net", 0) for r in rows)
+        for en_key in all_en_keys
+    }
 
-        summary: dict = {en_key: sum(_safe_int(r.get(en_key, {}).get("net", 0)) for r in rows)
-                         for _, en_key in col_map}
-
-        return JSONResponse(content=_sanitize({
-            "market": market_code,
-            "fromdate": fromdate,
-            "todate": todate,
-            "data": rows,
-            "summary": summary,
-        }))
-
-    except Exception as e:
-        logger.error(f"investor-trading processing error: {e}", exc_info=True)
-        return JSONResponse(content={"error": f"데이터 처리 오류: {e}"}, status_code=500)
+    return JSONResponse(content=_sanitize({
+        "market": market_upper,
+        "fromdate": fromdate,
+        "todate": todate,
+        "data": rows,
+        "summary": summary,
+    }))
