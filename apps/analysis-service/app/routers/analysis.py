@@ -32,7 +32,7 @@ def _sanitize(obj):
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 logger = logging.getLogger(__name__)
 
-MODEL_VERSION = "score_v1.0"
+MODEL_VERSION = "ensemble_v2.0"
 
 
 class GenerateSignalsRequest(BaseModel):
