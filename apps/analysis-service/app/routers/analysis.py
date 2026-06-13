@@ -173,41 +173,23 @@ _KRX_COL_MAP = [
 
 
 def _krx_fetch_investor_daily(mkt_id: str, strt_dd: str, end_dd: str) -> list:
-    """KRX MDCSTAT02202 직접 POST 호출 — 투자자별 거래실적 일별추이 (일반, 순매수, 거래대금)
-    pykrx Post 클래스와 동일한 헤더 사용 (X-Requested-With 필수)
+    """pykrx 내부 클래스 직접 호출 — 깨진 wrapper 우회 + pykrx 인증 세션 재사용.
+    KRX 2026년 이후 인증 필요: EC2 환경변수 KRX_ID, KRX_PW 설정 시 자동 로그인.
     """
-    session = _requests.Session()
-    # KRX 세션 초기화 (JSESSIONID 쿠키 획득)
-    session.get(
-        "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd",
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
-        timeout=10,
-    )
-    resp = session.post(
-        "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Referer": "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd",
-            "X-Requested-With": "XMLHttpRequest",
-        },
-        data={
-            "bld":         "dbms/MDC/STAT/standard/MDCSTAT02202",
-            "locale":      "ko_KR",
-            "mktId":       mkt_id,   # STK=KOSPI / KSQ=KOSDAQ
-            "etf":         "",
-            "etn":         "",
-            "elw":         "",
-            "strtDd":      strt_dd,
-            "endDd":       end_dd,
-            "inqTpCd":     "2",      # 일반(4그룹) 조회 타입
-            "trdVolVal":   "2",      # 거래대금
-            "askBid":      "3",      # 순매수
-            "csvxls_isNo": "false",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json().get("output", [])
+    try:
+        from pykrx.website.krx.market.core import 투자자별_거래실적_전체시장_일별추이_일반
+    except ImportError:
+        raise Exception("pykrx 미설치")
+
+    core = 투자자별_거래실적_전체시장_일별추이_일반()
+    # fetch(strtDd, endDd, mktId, etf, etn, els, trdVolVal, askBid)
+    # trdVolVal=2(거래대금), askBid=3(순매수)
+    df = core.fetch(strt_dd, end_dd, mkt_id, "", "", "", 2, 3)
+
+    if df is None or df.empty:
+        return []
+
+    return df.to_dict("records")
 
 
 @router.get("/investor-trading")
@@ -232,8 +214,17 @@ async def get_investor_trading(
     try:
         output = _krx_fetch_investor_daily(mkt_id, fromdate, todate)
     except Exception as e:
-        logger.error(f"KRX API error ({market_upper} {fromdate}~{todate}): {e}")
-        return JSONResponse(content={"error": f"KRX 데이터 조회 실패: {e}"}, status_code=500)
+        err_str = str(e)
+        logger.error(f"KRX investor-trading error ({market_upper} {fromdate}~{todate}): {err_str}")
+        # KRX 2026년 이후 인증 필요 — 명확한 안내 반환
+        if "LOGOUT" in err_str or "JSON" in err_str or "400" in err_str:
+            return JSONResponse(content={
+                "error": "KRX 인증 필요",
+                "detail": "KRX 데이터 포털(data.krx.co.kr)이 2026년부터 로그인을 요구합니다. "
+                          "EC2 .env에 KRX_ID=<아이디> KRX_PW=<비밀번호> 를 추가한 뒤 "
+                          "pm2 restart stock-signal-analysis 하세요.",
+            }, status_code=503)
+        return JSONResponse(content={"error": f"KRX 데이터 조회 실패: {err_str}"}, status_code=500)
 
     if not output:
         return JSONResponse(content={"market": market_upper, "fromdate": fromdate, "todate": todate, "data": [], "summary": {}})
