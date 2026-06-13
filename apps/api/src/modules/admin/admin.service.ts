@@ -278,6 +278,131 @@ export class AdminService {
     };
   }
 
+  async getDataQualityIssues(market = 'US') {
+    type PriceAnomalyRow = {
+      symbol: string;
+      name: string;
+      date: Date;
+      close: string;
+      prev_close: string;
+      change_ratio: string;
+    };
+
+    // 가격 이상치: 전일 대비 50% 이상 급변 (최근 7일)
+    const priceAnomalies = await this.prisma.$queryRaw<PriceAnomalyRow[]>`
+      WITH daily_changes AS (
+        SELECT
+          s.symbol,
+          s.name,
+          pd.date,
+          pd.close,
+          LAG(pd.close) OVER (PARTITION BY pd.stock_id ORDER BY pd.date) AS prev_close
+        FROM price_daily pd
+        JOIN stocks s  ON s.id  = pd.stock_id
+        JOIN markets m ON m.id  = s.market_id
+        WHERE m.code     = ${market}
+          AND pd.date    >= NOW() - INTERVAL '7 days'
+          AND pd.close   > 0
+      )
+      SELECT
+        symbol, name, date, close, prev_close,
+        ABS((close - prev_close) / prev_close) AS change_ratio
+      FROM daily_changes
+      WHERE prev_close IS NOT NULL
+        AND prev_close > 0
+        AND ABS((close - prev_close) / prev_close) > 0.5
+      ORDER BY change_ratio DESC
+      LIMIT 30
+    `;
+
+    type ZeroPriceRow = { symbol: string; name: string; date: Date; close: string };
+
+    // 0 또는 음수 가격 (최근 7일)
+    const zeroPrices = await this.prisma.$queryRaw<ZeroPriceRow[]>`
+      SELECT s.symbol, s.name, pd.date, pd.close
+      FROM price_daily pd
+      JOIN stocks s  ON s.id  = pd.stock_id
+      JOIN markets m ON m.id  = s.market_id
+      WHERE m.code  = ${market}
+        AND pd.date >= NOW() - INTERVAL '7 days'
+        AND pd.close <= 0
+      LIMIT 20
+    `;
+
+    type FinAnomalyRow = {
+      symbol: string;
+      name: string;
+      roe: string | null;
+      per: string | null;
+      pbr: string | null;
+      period_end: Date;
+    };
+
+    // 재무 이상치: ROE > ±500%, PER < 0 or > 500, PBR < 0 or > 50
+    const finAnomalies = await this.prisma.$queryRaw<FinAnomalyRow[]>`
+      SELECT DISTINCT ON (s.id)
+        s.symbol, s.name,
+        fm.roe, fm.per, fm.pbr, fm.period_end
+      FROM financial_metrics fm
+      JOIN stocks s  ON s.id  = fm.stock_id
+      JOIN markets m ON m.id  = s.market_id
+      WHERE m.code = ${market}
+        AND (
+          ABS(fm.roe) > 5
+          OR (fm.per IS NOT NULL AND (fm.per < 0 OR fm.per > 500))
+          OR (fm.pbr IS NOT NULL AND (fm.pbr < 0 OR fm.pbr > 50))
+        )
+      ORDER BY s.id, fm.period_end DESC
+      LIMIT 30
+    `;
+
+    const priceIssues = [
+      ...priceAnomalies.map(r => ({
+        type: 'price_spike' as const,
+        severity: Number(r.change_ratio) > 0.8 ? 'danger' : 'warn',
+        symbol: r.symbol,
+        name: r.name,
+        detail: `${(Number(r.change_ratio) * 100).toFixed(1)}% 급변 (${Number(r.prev_close).toFixed(2)} → ${Number(r.close).toFixed(2)})`,
+        date: r.date,
+      })),
+      ...zeroPrices.map(r => ({
+        type: 'zero_price' as const,
+        severity: 'danger' as const,
+        symbol: r.symbol,
+        name: r.name,
+        detail: `가격 ${Number(r.close).toFixed(4)} (0 이하)`,
+        date: r.date,
+      })),
+    ];
+
+    const finIssues = finAnomalies.map(r => {
+      const flags: string[] = [];
+      if (r.roe && Math.abs(Number(r.roe)) > 5)  flags.push(`ROE ${(Number(r.roe) * 100).toFixed(0)}%`);
+      if (r.per && (Number(r.per) < 0 || Number(r.per) > 500)) flags.push(`PER ${Number(r.per).toFixed(1)}`);
+      if (r.pbr && (Number(r.pbr) < 0 || Number(r.pbr) > 50))  flags.push(`PBR ${Number(r.pbr).toFixed(1)}`);
+      return {
+        type: 'financial_anomaly' as const,
+        severity: 'warn' as const,
+        symbol: r.symbol,
+        name: r.name,
+        detail: flags.join(', '),
+        date: r.period_end,
+      };
+    });
+
+    const allIssues = [...priceIssues, ...finIssues]
+      .sort((a, b) => (a.severity === 'danger' ? -1 : 1));
+
+    return {
+      market,
+      checkedAt: new Date(),
+      total: allIssues.length,
+      danger: allIssues.filter(i => i.severity === 'danger').length,
+      warn:   allIssues.filter(i => i.severity === 'warn').length,
+      issues: allIssues,
+    };
+  }
+
   async getSystemStatus() {
     try {
       const [pm2Out, memOut, diskOut, uptimeOut] = await Promise.all([

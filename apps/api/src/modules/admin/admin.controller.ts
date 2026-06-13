@@ -79,6 +79,12 @@ export class AdminController {
     return this.adminService.getDataHealth();
   }
 
+  @Get('quality')
+  @ApiOperation({ summary: '데이터 품질 이상치 검사' })
+  getDataQuality(@Query('market') market = 'US') {
+    return this.adminService.getDataQualityIssues(market);
+  }
+
   @Get('logs')
   @ApiOperation({ summary: '서버 로그 조회' })
   getLogs(@Query('service') service = 'api', @Query('lines') lines = 200) {

@@ -79,6 +79,29 @@ export class SchedulerService {
       if (!summary.hasWarning && !summary.hasDanger) {
         this.logger.log('[헬스체크] 모든 데이터 정상');
       }
+
+      // 데이터 품질 검사
+      for (const market of ['US', 'KR']) {
+        try {
+          const quality = await this.adminService.getDataQualityIssues(market);
+          if (quality.danger > 0) {
+            this.logger.error(
+              `[품질검사] ${market} 위험 이상치 ${quality.danger}건 — ` +
+              quality.issues
+                .filter(i => i.severity === 'danger')
+                .slice(0, 3)
+                .map(i => `${i.symbol}(${i.detail})`)
+                .join(', '),
+            );
+          } else if (quality.warn > 0) {
+            this.logger.warn(`[품질검사] ${market} 주의 이상치 ${quality.warn}건`);
+          } else {
+            this.logger.log(`[품질검사] ${market} 이상치 없음`);
+          }
+        } catch (e) {
+          this.logger.error(`[품질검사] ${market} 실행 오류: ${e}`);
+        }
+      }
     } catch (e) {
       this.logger.error(`[헬스체크] 실행 오류: ${e}`);
     }
