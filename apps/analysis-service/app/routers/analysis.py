@@ -198,21 +198,40 @@ async def get_investor_trading(
         return JSONResponse(content={"error": "market must be KOSPI or KOSDAQ"}, status_code=400)
 
     try:
-        # 순매수 1회만 호출 (매수/매도는 UI에서 미사용)
-        df = krx.get_market_trading_value_by_investor(fromdate, todate, market_code, on="순매수")
+        # pykrx 1.x: on 파라미터 없음, MultiIndex(투자자, 매도/매수/순매수) 반환
+        df_all = krx.get_market_trading_value_by_investor(fromdate, todate, market_code)
     except Exception as e:
         logger.error(f"pykrx investor-trading error ({market_code} {fromdate}~{todate}): {e}")
         return JSONResponse(content={"error": f"KRX 데이터 조회 실패: {e}"}, status_code=500)
 
     try:
-        if df is None or df.empty:
+        if df_all is None or df_all.empty:
             return JSONResponse(content={
                 "market": market_code, "fromdate": fromdate, "todate": todate,
                 "data": [], "summary": {},
             })
 
         # NaN → 0 일괄 처리
-        df = df.fillna(0)
+        df_all = df_all.fillna(0)
+
+        # MultiIndex(투자자type, 매도/매수/순매수) → 순매수 슬라이스
+        if isinstance(df_all.columns, pd.MultiIndex):
+            level_vals_0 = df_all.columns.get_level_values(0).tolist()
+            level_vals_1 = df_all.columns.get_level_values(1).tolist()
+            logger.info(f"pykrx MultiIndex level0 sample: {list(set(level_vals_0))[:5]}, level1 sample: {list(set(level_vals_1))[:5]}")
+
+            if "순매수" in level_vals_1:
+                df = df_all.xs("순매수", axis=1, level=1)
+            elif "순매수" in level_vals_0:
+                df = df_all.xs("순매수", axis=1, level=0)
+            else:
+                # fallback: 마지막 level1 값 사용
+                last_l1 = list(set(level_vals_1))[-1]
+                df = df_all.xs(last_l1, axis=1, level=1)
+                logger.warning(f"순매수 column not found, falling back to: {last_l1}")
+        else:
+            df = df_all
+            logger.info(f"pykrx flat columns: {list(df.columns)}")
 
         # 실제 컬럼 확인 후 매핑 (중복 en_key 는 첫 번째만 사용)
         seen_en_keys: set = set()
@@ -222,7 +241,7 @@ async def get_investor_trading(
                 col_map.append((kr_col, en_key))
                 seen_en_keys.add(en_key)
 
-        logger.info(f"pykrx columns: {list(df.columns)}")
+        logger.info(f"pykrx mapped columns: {col_map}")
 
         rows = []
         for date_idx in df.index:
