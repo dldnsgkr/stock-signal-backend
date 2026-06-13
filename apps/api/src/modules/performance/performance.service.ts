@@ -99,4 +99,161 @@ export class PerformanceService {
       };
     });
   }
+
+  async getTimeline(market = 'US', period: '30d' | '90d' | '180d' = '90d') {
+    const days = period === '30d' ? 30 : period === '90d' ? 90 : 180;
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    type TimelineRow = {
+      week: Date;
+      avg_return_7d: string | null;
+      avg_benchmark_7d: string | null;
+      avg_alpha_7d: string | null;
+      count: bigint;
+    };
+
+    const rows = await this.prisma.$queryRaw<TimelineRow[]>`
+      SELECT
+        DATE_TRUNC('week', rr.executed_at)  AS week,
+        AVG(res.return_7d)                  AS avg_return_7d,
+        AVG(res.benchmark_return_7d)        AS avg_benchmark_7d,
+        AVG(res.alpha_7d)                   AS avg_alpha_7d,
+        COUNT(*)                            AS count
+      FROM recommendation_results res
+      JOIN recommendations r       ON r.id    = res.recommendation_id
+      JOIN recommendation_runs rr  ON rr.id   = r.recommendation_run_id
+      WHERE rr.market_code  = ${market}
+        AND rr.executed_at  >= ${since}
+        AND r.action        = 'BUY'
+        AND res.return_7d   IS NOT NULL
+      GROUP BY DATE_TRUNC('week', rr.executed_at)
+      ORDER BY week ASC
+    `;
+
+    return rows.map(r => ({
+      week: r.week.toISOString().slice(0, 10),
+      avgReturn7d: r.avg_return_7d != null ? Number(r.avg_return_7d) : null,
+      avgBenchmark7d: r.avg_benchmark_7d != null ? Number(r.avg_benchmark_7d) : null,
+      avgAlpha7d: r.avg_alpha_7d != null ? Number(r.avg_alpha_7d) : null,
+      count: Number(r.count),
+    }));
+  }
+
+  async getBySector(market = 'US', period: '7d' | '30d' | '90d' = '30d') {
+    const days = period === '7d' ? 7 : period === '30d' ? 30 : 90;
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    type SectorRow = {
+      sector: string | null;
+      total: bigint;
+      hit_count: bigint;
+      avg_return_7d: string | null;
+      avg_alpha_7d: string | null;
+    };
+
+    const rows = await this.prisma.$queryRaw<SectorRow[]>`
+      SELECT
+        s.sector,
+        COUNT(*)                                         AS total,
+        COUNT(*) FILTER (WHERE res.hit_7d = true)       AS hit_count,
+        AVG(res.return_7d)                              AS avg_return_7d,
+        AVG(res.alpha_7d)                               AS avg_alpha_7d
+      FROM recommendation_results res
+      JOIN recommendations r       ON r.id   = res.recommendation_id
+      JOIN recommendation_runs rr  ON rr.id  = r.recommendation_run_id
+      JOIN stocks s                ON s.id   = r.stock_id
+      WHERE rr.market_code = ${market}
+        AND rr.executed_at >= ${since}
+        AND r.action       = 'BUY'
+        AND res.hit_7d     IS NOT NULL
+        AND s.sector       IS NOT NULL
+      GROUP BY s.sector
+      ORDER BY avg_return_7d DESC NULLS LAST
+    `;
+
+    return rows.map(r => ({
+      sector: r.sector ?? '기타',
+      total: Number(r.total),
+      hitRate: Number(r.total) > 0 ? Number(r.hit_count) / Number(r.total) : 0,
+      avgReturn7d: r.avg_return_7d != null ? Number(r.avg_return_7d) : null,
+      avgAlpha7d: r.avg_alpha_7d != null ? Number(r.avg_alpha_7d) : null,
+    }));
+  }
+
+  async getRecommendationsWithResults(market = 'US', period: '7d' | '30d' | '90d' = '30d', limit = 100) {
+    const days = period === '7d' ? 7 : period === '30d' ? 30 : 90;
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    type RecRow = {
+      id: number;
+      symbol: string;
+      name: string;
+      sector: string | null;
+      action: string;
+      score: string;
+      confidence: number;
+      entry_price: string;
+      recommended_at: Date;
+      return_1d: string | null;
+      return_7d: string | null;
+      return_30d: string | null;
+      alpha_7d: string | null;
+      alpha_30d: string | null;
+      hit_1d: boolean | null;
+      hit_7d: boolean | null;
+      hit_30d: boolean | null;
+    };
+
+    const rows = await this.prisma.$queryRaw<RecRow[]>`
+      SELECT
+        r.id,
+        s.symbol,
+        s.name,
+        s.sector,
+        r.action,
+        r.score,
+        r.confidence,
+        r.entry_price,
+        r.recommended_at,
+        res.return_1d,
+        res.return_7d,
+        res.return_30d,
+        res.alpha_7d,
+        res.alpha_30d,
+        res.hit_1d,
+        res.hit_7d,
+        res.hit_30d
+      FROM recommendations r
+      JOIN recommendation_runs rr  ON rr.id = r.recommendation_run_id
+      JOIN stocks s                ON s.id  = r.stock_id
+      LEFT JOIN recommendation_results res ON res.recommendation_id = r.id
+      WHERE rr.market_code = ${market}
+        AND rr.executed_at >= ${since}
+        AND r.action       = 'BUY'
+      ORDER BY r.recommended_at DESC
+      LIMIT ${limit}
+    `;
+
+    return rows.map(r => ({
+      id: r.id,
+      symbol: r.symbol,
+      name: r.name,
+      sector: r.sector,
+      score: Number(r.score),
+      confidence: r.confidence,
+      entryPrice: Number(r.entry_price),
+      recommendedAt: r.recommended_at,
+      return1d: r.return_1d != null ? Number(r.return_1d) : null,
+      return7d: r.return_7d != null ? Number(r.return_7d) : null,
+      return30d: r.return_30d != null ? Number(r.return_30d) : null,
+      alpha7d: r.alpha_7d != null ? Number(r.alpha_7d) : null,
+      alpha30d: r.alpha_30d != null ? Number(r.alpha_30d) : null,
+      hit1d: r.hit_1d,
+      hit7d: r.hit_7d,
+      hit30d: r.hit_30d,
+    }));
+  }
 }

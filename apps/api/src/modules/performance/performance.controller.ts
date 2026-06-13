@@ -23,4 +23,39 @@ export class PerformanceController {
   getModelVersions() {
     return this.performanceService.getModelVersionComparison();
   }
+
+  @Get('timeline')
+  @ApiOperation({ summary: '주별 평균 수익률 추이' })
+  @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
+  @ApiQuery({ name: 'period', required: false, enum: ['30d', '90d', '180d'] })
+  getTimeline(
+    @Query('market') market = 'US',
+    @Query('period') period: '30d' | '90d' | '180d' = '90d',
+  ) {
+    return this.performanceService.getTimeline(market, period);
+  }
+
+  @Get('by-sector')
+  @ApiOperation({ summary: '섹터별 성과 분석' })
+  @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
+  @ApiQuery({ name: 'period', required: false, enum: ['7d', '30d', '90d'] })
+  getBySector(
+    @Query('market') market = 'US',
+    @Query('period') period: '7d' | '30d' | '90d' = '30d',
+  ) {
+    return this.performanceService.getBySector(market, period);
+  }
+
+  @Get('recommendations')
+  @ApiOperation({ summary: '개별 추천 성과 목록' })
+  @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
+  @ApiQuery({ name: 'period', required: false, enum: ['7d', '30d', '90d'] })
+  @ApiQuery({ name: 'limit', required: false })
+  getRecommendations(
+    @Query('market') market = 'US',
+    @Query('period') period: '7d' | '30d' | '90d' = '30d',
+    @Query('limit') limit = 100,
+  ) {
+    return this.performanceService.getRecommendationsWithResults(market, period, +limit);
+  }
 }
