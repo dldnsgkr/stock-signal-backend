@@ -12,6 +12,17 @@ export interface BuySignalPayload {
   reasons: string[];
 }
 
+export interface SellSignalPayload {
+  symbol: string;
+  name: string;
+  market: string;
+  buyScore: number;
+  currentScore: number;
+  entryPrice: number;
+  exitPrice: number | null;
+  reasons: string[];
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -90,6 +101,74 @@ export class EmailService {
     const subject = `[Stock Signal] ${flagEmoji} ${payload.symbol} 매수 시그널 — 스코어 ${payload.score.toFixed(1)}`;
 
     this.logger.log(`Sending BUY signal email to ${to} for ${payload.symbol} (score=${payload.score.toFixed(1)})`);
+
+    if (!this.transporter) return;
+
+    try {
+      await this.transporter.sendMail({ from: this.from, to, subject, html });
+    } catch (err) {
+      this.logger.error(`Failed to send email to ${to}: ${err}`);
+    }
+  }
+
+  async sendSellSignalAlert(to: string, payload: SellSignalPayload): Promise<void> {
+    const flagEmoji = payload.market === 'KR' ? '🇰🇷' : '🇺🇸';
+    const priceChange = payload.exitPrice != null
+      ? ((payload.exitPrice - payload.entryPrice) / payload.entryPrice * 100).toFixed(2)
+      : null;
+    const priceChangeColor = priceChange != null && Number(priceChange) >= 0 ? '#16a34a' : '#dc2626';
+    const reasonsHtml = payload.reasons.map(r => `<li>${r}</li>`).join('');
+
+    const html = `
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <div style="max-width:560px;margin:32px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+    <div style="background:linear-gradient(135deg,#991b1b,#ef4444);padding:28px 32px;color:#fff">
+      <div style="font-size:13px;opacity:.8;margin-bottom:6px">${flagEmoji} ${payload.market} 시장 · 청산 시그널</div>
+      <div style="font-size:26px;font-weight:700;letter-spacing:-.5px">${payload.symbol}</div>
+      <div style="font-size:15px;opacity:.85;margin-top:2px">${payload.name}</div>
+    </div>
+    <div style="padding:28px 32px;border-bottom:1px solid #f1f5f9">
+      <div style="display:flex;gap:20px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">현재 스코어</div>
+          <div style="font-size:28px;font-weight:700;color:#dc2626">${payload.currentScore.toFixed(1)}</div>
+          <div style="font-size:11px;color:#94a3b8">진입 시 ${payload.buyScore.toFixed(1)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">진입가</div>
+          <div style="font-size:22px;font-weight:600;color:#0f172a">$${payload.entryPrice.toFixed(2)}</div>
+        </div>
+        ${payload.exitPrice != null ? `
+        <div>
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">현재가</div>
+          <div style="font-size:22px;font-weight:600;color:#0f172a">$${payload.exitPrice.toFixed(2)}</div>
+          ${priceChange != null ? `<div style="font-size:13px;font-weight:600;color:${priceChangeColor}">${Number(priceChange) >= 0 ? '+' : ''}${priceChange}%</div>` : ''}
+        </div>` : ''}
+      </div>
+    </div>
+    ${payload.reasons.length > 0 ? `
+    <div style="padding:24px 32px;border-bottom:1px solid #f1f5f9">
+      <div style="font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">청산 근거</div>
+      <ul style="margin:0;padding:0 0 0 18px;color:#334155;line-height:1.8;font-size:14px">
+        ${reasonsHtml}
+      </ul>
+    </div>` : ''}
+    <div style="padding:20px 32px;background:#f8fafc">
+      <div style="font-size:12px;color:#94a3b8;line-height:1.7">
+        이 알림은 <strong>${to}</strong>가 <strong>${payload.symbol}</strong> 종목의 시그널 알림을 구독하여 발송되었습니다.<br>
+        ⚠️ 본 시그널은 참고용이며, 투자는 본인의 판단과 책임 하에 이루어져야 합니다.
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    const subject = `[Stock Signal] ${flagEmoji} ${payload.symbol} 청산 시그널 — 스코어 ${payload.currentScore.toFixed(1)}`;
+
+    this.logger.log(`Sending SELL signal email to ${to} for ${payload.symbol} (score=${payload.currentScore.toFixed(1)})`);
 
     if (!this.transporter) return;
 

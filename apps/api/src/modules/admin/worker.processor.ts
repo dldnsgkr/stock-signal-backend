@@ -5,7 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import axios from 'axios';
 import { throwForRetryPolicy } from '../../common/job-errors';
-import { EmailService } from '../alert/email.service';
+import { EmailService, SellSignalPayload } from '../alert/email.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 
 // FastAPI 호출 헬퍼 — 단일 시도, 재시도는 Bull backoff에 위임
@@ -323,6 +323,8 @@ export class SellSignalProcessor {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly email: EmailService,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   @Process('check')
@@ -385,7 +387,53 @@ export class SellSignalProcessor {
     });
 
     this.logger.log(`Generated ${sellSignals.length} SELL signals for ${market}`);
+
+    // SELL 시그널 구독자에게 이메일 발송 (비동기, job 실패에 영향 없음)
+    this.sendSellAlertEmails(market, sellSignals, entryPriceMap).catch(e =>
+      this.logger.error(`SELL alert email dispatch error: ${e}`),
+    );
+
     return { checked: openBuys.length, generated: sellSignals.length };
+  }
+
+  private async sendSellAlertEmails(market: string, sellSignals: any[], entryPriceMap: Map<number, any>) {
+    for (const s of sellSignals) {
+      try {
+        const subscribers = await this.subscriptions.getActiveSubscribers(s.stock_id);
+        if (subscribers.length === 0) continue;
+
+        const stock = await this.prisma.stock.findUnique({
+          where: { id: s.stock_id },
+          select: { symbol: true, name: true },
+        });
+        if (!stock) continue;
+
+        const buyRec = await this.prisma.recommendation.findUnique({
+          where: { id: s.buy_recommendation_id },
+          select: { score: true },
+        });
+
+        const payload: SellSignalPayload = {
+          symbol: stock.symbol,
+          name: stock.name,
+          market,
+          buyScore: buyRec ? Number(buyRec.score) : 0,
+          currentScore: Number(s.current_score),
+          entryPrice: Number(entryPriceMap.get(s.buy_recommendation_id) ?? s.exit_price),
+          exitPrice: s.exit_price != null ? Number(s.exit_price) : null,
+          reasons: Array.isArray(s.reasons) ? s.reasons : [],
+        };
+
+        for (const emailAddr of subscribers) {
+          await this.email.sendSellSignalAlert(emailAddr, payload);
+        }
+        if (subscribers.length > 0) {
+          this.logger.log(`Sent SELL alert for ${stock.symbol} to ${subscribers.length} subscriber(s)`);
+        }
+      } catch (e) {
+        this.logger.error(`Failed to send SELL alert for stockId=${s.stock_id}: ${e}`);
+      }
+    }
   }
 }
 
