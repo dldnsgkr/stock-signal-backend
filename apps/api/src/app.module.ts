@@ -10,6 +10,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 import { HealthModule } from './modules/health/health.module';
 import { AlertModule } from './modules/alert/alert.module';
+import { SubscriptionModule } from './modules/subscriptions/subscription.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { AlertModule } from './modules/alert/alert.module';
     PerformanceModule,
     AdminModule,
     SchedulerModule,
+    SubscriptionModule,
   ],
 })
 export class AppModule {}

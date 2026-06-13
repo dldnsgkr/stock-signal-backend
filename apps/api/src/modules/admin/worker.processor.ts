@@ -5,6 +5,8 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import axios from 'axios';
 import { throwForRetryPolicy } from '../../common/job-errors';
+import { EmailService } from '../alert/email.service';
+import { SubscriptionService } from '../subscriptions/subscription.service';
 
 // FastAPI 호출 헬퍼 — 단일 시도, 재시도는 Bull backoff에 위임
 async function callAnalysis(url: string, data: object, timeoutMs = 600000): Promise<any> {
@@ -164,6 +166,8 @@ export class RecommendationProcessor {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly email: EmailService,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   @Process('generate')
@@ -242,11 +246,51 @@ export class RecommendationProcessor {
       });
 
       this.logger.log(`Saved ${recommendations.length} recommendations for run ${run.id}`);
+
+      // BUY 시그널 구독자에게 이메일 발송 (비동기, 실패해도 job은 성공)
+      const buyRecs = recommendations.filter((r: any) => r.action === 'BUY');
+      this.sendAlertEmails(market, buyRecs).catch(e =>
+        this.logger.error(`Alert email dispatch error: ${e}`),
+      );
+
       return { runId: run.id, count: recommendations.length };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Recommendation generation failed: ${msg}`);
       throw err;
+    }
+  }
+
+  private async sendAlertEmails(market: string, buyRecs: any[]) {
+    for (const rec of buyRecs) {
+      try {
+        const subscribers = await this.subscriptions.getActiveSubscribers(rec.stockId);
+        if (subscribers.length === 0) continue;
+
+        const stock = await this.prisma.stock.findUnique({
+          where: { id: rec.stockId },
+          select: { symbol: true, name: true },
+        });
+        if (!stock) continue;
+
+        const reasons: string[] = Array.isArray(rec.reasons) ? rec.reasons : [];
+        for (const email of subscribers) {
+          await this.email.sendBuySignalAlert(email, {
+            symbol: stock.symbol,
+            name: stock.name,
+            market,
+            score: Number(rec.score),
+            confidence: Number(rec.confidence),
+            entryPrice: Number(rec.entryPrice),
+            reasons,
+          });
+        }
+        if (subscribers.length > 0) {
+          this.logger.log(`Sent BUY alert for ${stock.symbol} to ${subscribers.length} subscriber(s)`);
+        }
+      } catch (e) {
+        this.logger.error(`Failed to send alert for stockId=${rec.stockId}: ${e}`);
+      }
     }
   }
 }

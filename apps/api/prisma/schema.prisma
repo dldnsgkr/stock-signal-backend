@@ -28,11 +28,12 @@ model Stock {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  market          Market              @relation(fields: [marketId], references: [id])
-  prices          PriceDaily[]
-  financials      FinancialMetrics[]
-  newsRelations   NewsStockRelation[]
-  recommendations Recommendation[]
+  market              Market               @relation(fields: [marketId], references: [id])
+  prices              PriceDaily[]
+  financials          FinancialMetrics[]
+  newsRelations       NewsStockRelation[]
+  recommendations     Recommendation[]
+  alertSubscriptions  AlertSubscription[]
 
   @@unique([marketId, symbol], map: "stocks_market_id_symbol_key")
   @@index([symbol])
@@ -166,6 +167,20 @@ model Recommendation {
   @@index([recommendedAt(sort: Desc)])
   @@index([stockId, recommendedAt(sort: Desc)])
   @@map("recommendations")
+}
+
+model AlertSubscription {
+  id        Int      @id @default(autoincrement())
+  email     String   @db.VarChar(200)
+  stockId   Int      @map("stock_id")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  stock Stock @relation(fields: [stockId], references: [id])
+
+  @@unique([email, stockId])
+  @@index([stockId])
+  @@map("alert_subscriptions")
 }
 
 model RecommendationResult {

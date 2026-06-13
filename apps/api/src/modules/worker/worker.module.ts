@@ -12,10 +12,12 @@ import {
 } from '../admin/worker.processor';
 import { QueueMonitorService } from './queue-monitor.service';
 import { AlertModule } from '../alert/alert.module';
+import { SubscriptionModule } from '../subscriptions/subscription.module';
 
 @Module({
   imports: [
     AlertModule,
+    SubscriptionModule,
     BullModule.registerQueue(
       { name: 'collect-stock-list' },
       { name: 'collect-prices' },
