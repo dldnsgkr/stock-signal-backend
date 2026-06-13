@@ -510,4 +510,117 @@ export class AdminService {
       notes: run.notes,
     }));
   }
+
+  async getScoringAnalysis(market = 'US') {
+    const recs = await this.prisma.recommendation.findMany({
+      where: {
+        action: 'BUY',
+        run: { marketCode: market },
+        result: { isNot: null },
+      },
+      select: {
+        score: true,
+        scoreDetailJson: true,
+        result: { select: { return7d: true, hit7d: true } },
+      },
+      orderBy: { recommendedAt: 'desc' },
+      take: 2000,
+    });
+
+    const evaluated = recs.filter(r => r.result?.hit7d != null);
+    const totalEvaluated = evaluated.length;
+
+    // ── 1. 임계값 민감도 ──────────────────────────────────────────────────
+    const THRESHOLDS = [50, 55, 60, 65, 70, 75, 80];
+    const thresholdSensitivity = THRESHOLDS.map(thr => {
+      const above = evaluated.filter(r => Number(r.score) >= thr);
+      const hits  = above.filter(r => r.result?.hit7d === true);
+      const ret   = above.map(r => Number(r.result?.return7d ?? 0));
+      return {
+        threshold:  thr,
+        count:      above.length,
+        hitRate7d:  above.length > 0 ? hits.length / above.length : null,
+        avgReturn7d: above.length > 0 ? ret.reduce((a, b) => a + b, 0) / ret.length : null,
+        isCurrent:  thr === 65,
+      };
+    });
+
+    // ── 2. 점수 구간별 성과 ───────────────────────────────────────────────
+    const BANDS = [
+      { min: 0,  max: 50,  label: '<50'   },
+      { min: 50, max: 55,  label: '50–55' },
+      { min: 55, max: 60,  label: '55–60' },
+      { min: 60, max: 65,  label: '60–65' },
+      { min: 65, max: 70,  label: '65–70' },
+      { min: 70, max: 75,  label: '70–75' },
+      { min: 75, max: 101, label: '75+'   },
+    ];
+    const scoreBands = BANDS.map(b => {
+      const inBand = evaluated.filter(r => {
+        const s = Number(r.score);
+        return s >= b.min && s < b.max;
+      });
+      const hits = inBand.filter(r => r.result?.hit7d === true);
+      const ret  = inBand.map(r => Number(r.result?.return7d ?? 0));
+      return {
+        band:           b.label,
+        count:          inBand.length,
+        hitRate7d:      inBand.length > 0 ? hits.length / inBand.length : null,
+        avgReturn7d:    inBand.length > 0 ? ret.reduce((a, b) => a + b, 0) / ret.length : null,
+        isCurrentBuyZone: b.min >= 65,
+      };
+    }).filter(b => b.count > 0);
+
+    // ── 3. 전략 기여도 ────────────────────────────────────────────────────
+    type StratKey = 'momentum' | 'value' | 'sentiment';
+    const WEIGHTS: Record<StratKey, number> = { momentum: 0.45, value: 0.25, sentiment: 0.30 };
+    const LABELS:  Record<StratKey, string> = { momentum: '모멘텀', value: '가치', sentiment: '감성' };
+
+    const strategyBreakdown = (['momentum', 'value', 'sentiment'] as StratKey[]).map(strat => {
+      const dominated = evaluated.filter(r => {
+        const d   = r.scoreDetailJson as Record<string, number> | null;
+        const mom  = d?.momentum_score  ?? 0;
+        const val  = d?.value_score     ?? 0;
+        const sent = d?.sentiment_score ?? 0;
+        if (strat === 'momentum')  return mom >= val  && mom >= sent;
+        if (strat === 'value')     return val  > mom  && val >= sent;
+        return sent > mom && sent > val;
+      });
+      const hits = dominated.filter(r => r.result?.hit7d === true);
+      const ret  = dominated.map(r => Number(r.result?.return7d ?? 0));
+      return {
+        strategy:      strat,
+        label:         LABELS[strat],
+        count:         dominated.length,
+        hitRate7d:     dominated.length > 0 ? hits.length / dominated.length : null,
+        avgReturn7d:   dominated.length > 0 ? ret.reduce((a, b) => a + b, 0) / ret.length : null,
+        currentWeight: WEIGHTS[strat],
+      };
+    });
+
+    // ── 4. 인사이트 요약 ──────────────────────────────────────────────────
+    const currentThr = thresholdSensitivity.find(t => t.isCurrent);
+    const bestThr = thresholdSensitivity
+      .filter(t => t.count >= 5 && t.hitRate7d != null)
+      .sort((a, b) => (b.hitRate7d ?? 0) - (a.hitRate7d ?? 0))[0];
+    const bestStrat = [...strategyBreakdown]
+      .filter(s => s.count >= 3 && s.hitRate7d != null)
+      .sort((a, b) => (b.hitRate7d ?? 0) - (a.hitRate7d ?? 0))[0];
+
+    return {
+      market,
+      totalEvaluated,
+      thresholdSensitivity,
+      scoreBands,
+      strategyBreakdown,
+      insight: {
+        currentThreshold:        65,
+        currentThresholdHitRate: currentThr?.hitRate7d ?? null,
+        bestThreshold:           bestThr?.threshold ?? null,
+        bestThresholdHitRate:    bestThr?.hitRate7d  ?? null,
+        dominantStrategy:        bestStrat?.label    ?? null,
+        dominantStrategyHitRate: bestStrat?.hitRate7d ?? null,
+      },
+    };
+  }
 }

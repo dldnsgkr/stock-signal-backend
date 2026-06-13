@@ -116,4 +116,10 @@ export class AdminController {
   activateModelVersion(@Param('id') id: string) {
     return this.adminService.activateModelVersion(+id);
   }
+
+  @Get('scoring-analysis')
+  @ApiOperation({ summary: '스코어링 피드백 루프 분석' })
+  getScoringAnalysis(@Query('market') market = 'US') {
+    return this.adminService.getScoringAnalysis(market);
+  }
 }
