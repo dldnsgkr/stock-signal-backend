@@ -15,6 +15,7 @@ import { AdminService } from './admin.service';
       { name: 'generate-recommendations' },
       { name: 'evaluate-recommendations' },
       { name: 'collect-macro' },
+      { name: 'check-sell-signals' },
       { name: 'run-pipeline' },
     ),
   ],

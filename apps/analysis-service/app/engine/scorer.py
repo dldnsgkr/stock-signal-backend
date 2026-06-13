@@ -377,6 +377,7 @@ def generate_reasons(features: dict, score_detail: dict, action: str) -> list[st
         reasons.append(f"VIX {vix:.1f} — 시장 변동성 높음")
 
     if not reasons:
-        reasons.append("복합 지표 종합 기준 " + ("매수" if action == "BUY" else "관심" if action == "WATCH" else "회피") + " 시그널")
+        label = {"BUY": "매수", "WATCH": "관심", "SELL": "청산", "AVOID": "회피"}.get(action, "관심")
+        reasons.append(f"복합 지표 종합 기준 {label} 시그널")
 
     return reasons[:5]

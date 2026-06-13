@@ -316,6 +316,79 @@ export class MacroProcessor {
   }
 }
 
+@Processor('check-sell-signals')
+export class SellSignalProcessor {
+  private readonly logger = new Logger(SellSignalProcessor.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
+
+  @Process('check')
+  async handleCheckSellSignals(job: Job<{ market: string }>) {
+    const { market } = job.data;
+    this.logger.log(`Checking SELL signals for ${market}...`);
+
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000);
+
+    const openBuys = await this.prisma.recommendation.findMany({
+      where: {
+        action: 'BUY',
+        recommendedAt: { gte: ninetyDaysAgo },
+        sellSignal: { is: null },
+        stock: { market: { code: market } },
+      },
+      select: { id: true, stockId: true, score: true, entryPrice: true },
+    });
+
+    if (openBuys.length === 0) {
+      this.logger.log(`No open BUY recommendations for ${market}`);
+      return { checked: 0, generated: 0 };
+    }
+
+    this.logger.log(`Checking ${openBuys.length} open BUY recs for ${market}`);
+
+    const analysisUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
+    let responseData: any;
+    try {
+      responseData = await callAnalysis(`${analysisUrl}/analysis/generate-sell-signals`, {
+        market,
+        buy_recommendations: openBuys.map(r => ({
+          id: r.id,
+          stock_id: r.stockId,
+          buy_score: Number(r.score),
+        })),
+      });
+    } catch (err) {
+      throwForRetryPolicy(err, `check-sell-signals/${market}`);
+    }
+
+    const sellSignals: any[] = responseData?.sell_signals ?? [];
+    if (sellSignals.length === 0) {
+      this.logger.log(`No SELL signals generated for ${market}`);
+      return { checked: openBuys.length, generated: 0 };
+    }
+
+    const entryPriceMap = new Map(openBuys.map(r => [r.id, r.entryPrice]));
+
+    await this.prisma.sellSignal.createMany({
+      data: sellSignals.map((s: any) => ({
+        buyRecommendationId: s.buy_recommendation_id,
+        stockId: s.stock_id,
+        currentScore: s.current_score,
+        entryPrice: entryPriceMap.get(s.buy_recommendation_id) ?? s.exit_price,
+        exitPrice: s.exit_price ?? null,
+        reasons: s.reasons ?? [],
+      })),
+      skipDuplicates: true,
+    });
+
+    this.logger.log(`Generated ${sellSignals.length} SELL signals for ${market}`);
+    return { checked: openBuys.length, generated: sellSignals.length };
+  }
+}
+
 @Processor('run-pipeline')
 export class PipelineProcessor {
   private readonly logger = new Logger(PipelineProcessor.name);
@@ -327,6 +400,7 @@ export class PipelineProcessor {
     @InjectQueue('collect-financials') private financialsQueue: Queue,
     @InjectQueue('collect-macro') private macroQueue: Queue,
     @InjectQueue('generate-recommendations') private recsQueue: Queue,
+    @InjectQueue('check-sell-signals') private sellSignalQueue: Queue,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {}
@@ -401,6 +475,16 @@ export class PipelineProcessor {
       backoff: { type: 'exponential', delay: 15000 },
     });
     await rJob.finished();
+    await safeProgress(job, 95);
+
+    // Phase 4: SELL 시그널 체크
+    try { await job.update({ market, currentStep: 'sell-check' }); } catch {}
+    this.logger.log(`[Pipeline] Phase 4: SELL signal check`);
+    const sellJob = await this.sellSignalQueue.add('check', { market }, {
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
+    await sellJob.finished();
     await safeProgress(job, 100);
 
     this.logger.log(`Pipeline completed for ${market}`);

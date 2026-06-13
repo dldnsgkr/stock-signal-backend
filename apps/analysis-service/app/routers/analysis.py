@@ -1,11 +1,11 @@
 import logging
 import math
 from fastapi import APIRouter, Depends
-from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
+from typing import List
 from app.database import get_db
 from app.models.db_models import Stock, Market
 from app.engine.feature_builder import build_features
@@ -14,6 +14,7 @@ from app.engine.scorer import (
     determine_action,
     calculate_confidence,
     generate_reasons,
+    WATCH_THRESHOLD,
 )
 
 
@@ -98,3 +99,48 @@ async def generate_signals(body: GenerateSignalsRequest, db: AsyncSession = Depe
         "runNotes": f"Score-based v1 run for {body.market}, {len(recommendations)} signals",
     })
     return JSONResponse(content=payload)
+
+
+class BuyRecItem(BaseModel):
+    id: int
+    stock_id: int
+    buy_score: float
+
+
+class GenerateSellSignalsRequest(BaseModel):
+    market: str = "US"
+    buy_recommendations: List[BuyRecItem]
+
+
+@router.post("/generate-sell-signals")
+async def generate_sell_signals(body: GenerateSellSignalsRequest, db: AsyncSession = Depends(get_db)):
+    sell_signals = []
+
+    for rec in body.buy_recommendations:
+        stock = await db.get(Stock, rec.stock_id)
+        if not stock:
+            continue
+
+        features = await build_features(db, stock, market_code=body.market)
+        if not features:
+            continue
+
+        score_detail = calculate_total_score(features)
+        current_score = score_detail["total_score"]
+
+        if current_score < WATCH_THRESHOLD:
+            reasons = generate_reasons(features, score_detail, "SELL")
+            sell_signals.append({
+                "buy_recommendation_id": rec.id,
+                "stock_id": rec.stock_id,
+                "current_score": current_score,
+                "exit_price": features["current_price"],
+                "reasons": reasons,
+            })
+
+    logger.info(
+        f"SELL signal check for {body.market}: "
+        f"checked={len(body.buy_recommendations)}, signals={len(sell_signals)}"
+    )
+
+    return JSONResponse(content=_sanitize({"sell_signals": sell_signals}))

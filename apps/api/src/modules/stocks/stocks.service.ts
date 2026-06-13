@@ -73,6 +73,19 @@ export class StocksService {
     });
   }
 
+  async getRecommendations(symbol: string, limit = 10) {
+    const stock = await this.findBySymbol(symbol);
+    return this.prisma.recommendation.findMany({
+      where: { stockId: stock.id, action: 'BUY' },
+      orderBy: { recommendedAt: 'desc' },
+      take: limit,
+      include: {
+        result: true,
+        sellSignal: true,
+      },
+    });
+  }
+
   async getMarketSummary(marketCode: string) {
     const recentPrices = await this.prisma.priceDaily.findMany({
       where: {

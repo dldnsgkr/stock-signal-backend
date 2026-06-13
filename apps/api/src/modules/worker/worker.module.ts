@@ -9,6 +9,7 @@ import {
   EvaluationProcessor,
   MacroProcessor,
   PipelineProcessor,
+  SellSignalProcessor,
 } from '../admin/worker.processor';
 import { QueueMonitorService } from './queue-monitor.service';
 import { AlertModule } from '../alert/alert.module';
@@ -26,6 +27,7 @@ import { SubscriptionModule } from '../subscriptions/subscription.module';
       { name: 'generate-recommendations' },
       { name: 'evaluate-recommendations' },
       { name: 'collect-macro' },
+      { name: 'check-sell-signals' },
       {
         name: 'run-pipeline',
         settings: {
@@ -46,6 +48,7 @@ import { SubscriptionModule } from '../subscriptions/subscription.module';
     EvaluationProcessor,
     MacroProcessor,
     PipelineProcessor,
+    SellSignalProcessor,
     QueueMonitorService,
   ],
 })

@@ -46,4 +46,11 @@ export class StocksController {
   getFinancials(@Param('symbol') symbol: string) {
     return this.stocksService.getFinancials(symbol);
   }
+
+  @Get(':symbol/recommendations')
+  @ApiOperation({ summary: '종목 BUY 추천 이력 (SELL 시그널 포함)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  getRecommendations(@Param('symbol') symbol: string, @Query('limit') limit = 10) {
+    return this.stocksService.getRecommendations(symbol, +limit);
+  }
 }

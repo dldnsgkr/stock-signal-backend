@@ -34,6 +34,7 @@ model Stock {
   newsRelations       NewsStockRelation[]
   recommendations     Recommendation[]
   alertSubscriptions  AlertSubscription[]
+  sellSignals         SellSignal[]
 
   @@unique([marketId, symbol], map: "stocks_market_id_symbol_key")
   @@index([symbol])
@@ -160,13 +161,31 @@ model Recommendation {
   scoreDetailJson     Json     @default("{}") @map("score_detail_json")
   recommendedAt       DateTime @default(now()) @map("recommended_at")
 
-  run    RecommendationRun    @relation(fields: [recommendationRunId], references: [id])
-  stock  Stock                @relation(fields: [stockId], references: [id])
-  result RecommendationResult?
+  run        RecommendationRun    @relation(fields: [recommendationRunId], references: [id])
+  stock      Stock                @relation(fields: [stockId], references: [id])
+  result     RecommendationResult?
+  sellSignal SellSignal?
 
   @@index([recommendedAt(sort: Desc)])
   @@index([stockId, recommendedAt(sort: Desc)])
   @@map("recommendations")
+}
+
+model SellSignal {
+  id                  Int      @id @default(autoincrement())
+  buyRecommendationId Int      @unique @map("buy_recommendation_id")
+  stockId             Int      @map("stock_id")
+  currentScore        Decimal  @map("current_score") @db.Decimal(8, 4)
+  entryPrice          Decimal  @map("entry_price") @db.Decimal(15, 4)
+  exitPrice           Decimal? @map("exit_price") @db.Decimal(15, 4)
+  reasons             Json     @default("[]")
+  generatedAt         DateTime @default(now()) @map("generated_at")
+
+  buyRecommendation Recommendation @relation(fields: [buyRecommendationId], references: [id])
+  stock             Stock          @relation(fields: [stockId], references: [id])
+
+  @@index([stockId, generatedAt(sort: Desc)])
+  @@map("sell_signals")
 }
 
 model AlertSubscription {
