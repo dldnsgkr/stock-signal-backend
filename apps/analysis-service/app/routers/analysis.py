@@ -260,3 +260,67 @@ async def get_investor_trading(
         "data": rows,
         "summary": summary,
     }))
+
+
+@router.get("/foreign-top-stocks")
+async def get_foreign_top_stocks(
+    market: str = Query("KOSPI", description="KOSPI 또는 KOSDAQ"),
+    date: Optional[str] = Query(None, description="YYYYMMDD, 기본값 오늘"),
+    limit: int = Query(30, description="순매수/순매도 상위 종목 수"),
+):
+    """외국인 순매수·순매도 상위 종목 (KRX MDCSTAT02401, invstTpCd=9000)"""
+    try:
+        from pykrx.website.krx.market.core import 투자자별_순매수상위종목
+    except ImportError:
+        return JSONResponse(content={"error": "pykrx 미설치"}, status_code=500)
+
+    today = datetime.date.today()
+    if not date:
+        date = today.strftime("%Y%m%d")
+
+    market_upper = market.upper()
+    if market_upper not in ("KOSPI", "KOSDAQ"):
+        return JSONResponse(content={"error": "market must be KOSPI or KOSDAQ"}, status_code=400)
+
+    mkt_id = "STK" if market_upper == "KOSPI" else "KSQ"
+
+    try:
+        core = 투자자별_순매수상위종목()
+        df = core.fetch(date, date, mkt_id, "9000")  # 9000 = 외국인
+    except Exception as e:
+        err_str = str(e)
+        logger.error(f"foreign-top-stocks error ({market_upper} {date}): {err_str}")
+        if any(kw in err_str for kw in ("LOGOUT", "Expecting value", "column 1", "400 Client")):
+            return JSONResponse(content={"error": "KRX 인증 필요"}, status_code=503)
+        return JSONResponse(content={"error": f"데이터 조회 실패: {err_str}"}, status_code=500)
+
+    if df is None or df.empty:
+        return JSONResponse(content={"market": market_upper, "date": date, "topBuy": [], "topSell": []})
+
+    if df is not None and not df.empty:
+        logger.info(f"foreign-top-stocks columns: {list(df.columns)}")
+
+    df = df.fillna(0)
+    df["_netval"] = df["NETBID_TRDVAL"].apply(_safe_int)
+    df = df.sort_values("_netval", ascending=False)
+
+    def to_stock(row: dict) -> dict:
+        return {
+            "code":      str(row.get("ISU_SRT_CD", "")),
+            "name":      str(row.get("ISU_NM", "")),
+            "netBuyVol": _safe_int(row.get("NETBID_TRDVOL", 0)),
+            "netBuyVal": _safe_int(row.get("NETBID_TRDVAL", 0)),
+            "buyVal":    _safe_int(row.get("BID_TRDVAL", 0)),
+            "sellVal":   _safe_int(row.get("ASK_TRDVAL", 0)),
+        }
+
+    records = df.to_dict("records")
+    top_buy  = [to_stock(r) for r in records[:limit] if _safe_int(r.get("NETBID_TRDVAL", 0)) > 0]
+    top_sell = [to_stock(r) for r in reversed(records[-limit:]) if _safe_int(r.get("NETBID_TRDVAL", 0)) < 0]
+
+    return JSONResponse(content=_sanitize({
+        "market": market_upper,
+        "date": date,
+        "topBuy": top_buy,
+        "topSell": top_sell,
+    }))

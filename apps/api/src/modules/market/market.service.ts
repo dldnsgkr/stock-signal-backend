@@ -8,6 +8,22 @@ export class MarketService {
 
   constructor(private readonly config: ConfigService) {}
 
+  async getForeignTopStocks(market: string, date?: string, limit = 30) {
+    const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
+    const params = new URLSearchParams({ market: market.toUpperCase(), limit: String(limit) });
+    if (date) params.set('date', date);
+    try {
+      const res = await axios.get(
+        `${baseUrl}/analysis/foreign-top-stocks?${params}`,
+        { timeout: 60000, validateStatus: () => true },
+      );
+      return res.data;
+    } catch (err: any) {
+      this.logger.error(`foreign-top-stocks failed: ${err.message}`);
+      return { error: err.message };
+    }
+  }
+
   async getInvestorTrading(market: string, fromdate?: string, todate?: string) {
     const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
     const params = new URLSearchParams({ market: market.toUpperCase() });
