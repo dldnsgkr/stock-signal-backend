@@ -1,9 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class StocksService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(StocksService.name);
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   async findAll(market?: string, cursorId?: number, pageSize = 50, search?: string) {
     const where: any = { isActive: true };
@@ -105,6 +111,72 @@ export class StocksService {
       score: Number(r.score),
       action: r.action,
     }));
+  }
+
+  async getTechnicalLevels(symbol: string, market: string) {
+    const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
+    try {
+      const res = await axios.get(
+        `${baseUrl}/analysis/technical-levels?symbol=${symbol.toUpperCase()}&market=${market.toUpperCase()}`,
+        { timeout: 30000, validateStatus: () => true },
+      );
+      return res.data;
+    } catch (err: any) {
+      this.logger.error(`technical-levels failed for ${symbol}: ${err.message}`);
+      return { error: err.message };
+    }
+  }
+
+  async getSectorSummary(market: string) {
+    const stocks = await this.prisma.stock.findMany({
+      where: { market: { code: market }, isActive: true, sector: { not: null } },
+      select: {
+        symbol: true,
+        name: true,
+        sector: true,
+        recommendations: {
+          select: { action: true, score: true },
+          orderBy: { recommendedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    const map = new Map<string, {
+      stocks: { symbol: string; name: string; score: number | null; action: string }[];
+      counts: Record<string, number>;
+      totalScore: number;
+      scoredCount: number;
+    }>();
+
+    for (const s of stocks) {
+      const sector = s.sector!;
+      const rec = s.recommendations[0];
+      if (!map.has(sector)) {
+        map.set(sector, { stocks: [], counts: { BUY: 0, WATCH: 0, AVOID: 0 }, totalScore: 0, scoredCount: 0 });
+      }
+      const entry = map.get(sector)!;
+      const score = rec ? Number(rec.score) : null;
+      entry.stocks.push({ symbol: s.symbol, name: s.name, score, action: rec?.action ?? 'NONE' });
+      if (rec) {
+        entry.counts[rec.action] = (entry.counts[rec.action] ?? 0) + 1;
+        entry.totalScore += Number(rec.score);
+        entry.scoredCount++;
+      }
+    }
+
+    return Array.from(map.entries())
+      .map(([sector, e]) => ({
+        sector,
+        stockCount: e.stocks.length,
+        signals: e.counts,
+        avgScore: e.scoredCount > 0 ? Math.round((e.totalScore / e.scoredCount) * 10) / 10 : null,
+        topStocks: e.stocks
+          .filter(s => s.score != null)
+          .sort((a, b) => b.score! - a.score!)
+          .slice(0, 3),
+      }))
+      .sort((a, b) => (b.signals.BUY ?? 0) - (a.signals.BUY ?? 0));
   }
 
   async getMarketSummary(marketCode: string) {

@@ -7,6 +7,15 @@ import { StocksService } from './stocks.service';
 export class StocksController {
   constructor(private readonly stocksService: StocksService) {}
 
+  // ── 리터럴 라우트는 반드시 :param 라우트보다 앞에 위치 ──────────────────
+
+  @Get('sector-summary')
+  @ApiOperation({ summary: '섹터별 시그널 집계' })
+  @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
+  getSectorSummary(@Query('market') market = 'US') {
+    return this.stocksService.getSectorSummary(market);
+  }
+
   @Get()
   @ApiOperation({ summary: '종목 목록 조회 (cursor 기반 무한스크롤)' })
   @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
@@ -59,5 +68,15 @@ export class StocksController {
   @ApiQuery({ name: 'days', required: false, type: Number })
   getScoreHistory(@Param('symbol') symbol: string, @Query('days') days = 90) {
     return this.stocksService.getScoreHistory(symbol, +days);
+  }
+
+  @Get(':symbol/technical-levels')
+  @ApiOperation({ summary: '지지선·저항선 + 이동평균 + 가격 전망' })
+  @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
+  getTechnicalLevels(
+    @Param('symbol') symbol: string,
+    @Query('market') market = 'US',
+  ) {
+    return this.stocksService.getTechnicalLevels(symbol, market);
   }
 }

@@ -2,14 +2,16 @@ import logging
 import math
 import datetime
 import requests as _requests
+import numpy as np
+import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from pydantic import BaseModel
 from typing import List, Optional
 from app.database import get_db
-from app.models.db_models import Stock, Market
+from app.models.db_models import Stock, Market, PriceDaily
 from app.engine.feature_builder import build_features
 from app.engine.scorer import (
     calculate_total_score,
@@ -323,4 +325,155 @@ async def get_foreign_top_stocks(
         "date": date,
         "topBuy": top_buy,
         "topSell": top_sell,
+    }))
+
+
+# ── 지지선·저항선 + 가격 전망 ────────────────────────────────────────────────
+
+def _find_support_resistance(
+    highs: pd.Series, lows: pd.Series, closes: pd.Series,
+    current_price: float, window: int = 3
+) -> dict:
+    """로컬 극값 탐지 → 클러스터링 → 지지/저항 레벨 반환."""
+    n = len(closes)
+    if n < window * 2 + 2:
+        return {"support": [], "resistance": []}
+
+    resistance_raw, support_raw = [], []
+    for i in range(window, n - window):
+        hi = float(highs.iloc[i])
+        lo = float(lows.iloc[i])
+        if all(hi >= float(highs.iloc[i - j]) for j in range(1, window + 1)) and \
+           all(hi >= float(highs.iloc[i + j]) for j in range(1, window + 1)):
+            resistance_raw.append(hi)
+        if all(lo <= float(lows.iloc[i - j]) for j in range(1, window + 1)) and \
+           all(lo <= float(lows.iloc[i + j]) for j in range(1, window + 1)):
+            support_raw.append(lo)
+
+    def cluster(levels: list, pct: float = 0.015) -> list:
+        if not levels:
+            return []
+        groups: list[list] = [[sorted(levels)[0]]]
+        for lv in sorted(levels)[1:]:
+            if (lv - groups[-1][-1]) / max(groups[-1][-1], 1e-9) <= pct:
+                groups[-1].append(lv)
+            else:
+                groups.append([lv])
+        return [round(sum(g) / len(g), 4) for g in groups]
+
+    all_r = cluster(resistance_raw)
+    all_s = cluster(support_raw)
+
+    resistance = sorted([r for r in all_r if current_price < r <= current_price * 1.30])[:3]
+    support    = sorted([s for s in all_s if current_price * 0.70 <= s < current_price], reverse=True)[:3]
+    return {"support": support, "resistance": resistance}
+
+
+def _calc_price_targets(
+    closes: pd.Series, highs: pd.Series, lows: pd.Series, current_price: float
+) -> dict:
+    """ATR 기반 단기·중기 가격 범위 + 선형 추세 반영."""
+    if len(closes) < 15:
+        return {}
+
+    prev_close = closes.shift(1)
+    tr = pd.concat([
+        highs - lows,
+        (highs - prev_close).abs(),
+        (lows - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = float(tr.ewm(com=13, adjust=False).mean().iloc[-1])
+
+    trend_1w = trend_1m = 0.0
+    if len(closes) >= 20:
+        x = np.arange(20, dtype=float)
+        slope = float(np.polyfit(x, closes.tail(20).values.astype(float), 1)[0])
+        trend_1w = slope * 5    # 5 거래일
+        trend_1m = slope * 20   # 20 거래일
+
+    center_1w = round(current_price + trend_1w, 4)
+    center_1m = round(current_price + trend_1m, 4)
+    band_1w   = round(atr, 4)
+    band_1m   = round(atr * (20 ** 0.5), 4)
+
+    return {
+        "week1": {
+            "low":    round(center_1w - band_1w, 4),
+            "center": center_1w,
+            "high":   round(center_1w + band_1w, 4),
+        },
+        "month1": {
+            "low":    round(center_1m - band_1m, 4),
+            "center": center_1m,
+            "high":   round(center_1m + band_1m, 4),
+        },
+    }
+
+
+@router.get("/technical-levels")
+async def get_technical_levels(
+    symbol: str = Query(..., description="종목 심볼"),
+    market: str = Query("US", description="US 또는 KR"),
+    days: int = Query(90, description="조회 기간(일)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """지지선·저항선 + 이동평균 + 가격 전망 범위 반환."""
+    market_upper = market.upper()
+    symbol_upper = symbol.upper()
+
+    stock_result = await db.execute(
+        select(Stock)
+        .join(Market)
+        .where(Stock.symbol == symbol_upper, Market.code == market_upper, Stock.is_active == True)
+    )
+    stock = stock_result.scalar_one_or_none()
+    if not stock:
+        return JSONResponse(content={"error": "Stock not found"}, status_code=404)
+
+    since = datetime.date.today() - datetime.timedelta(days=days)
+    price_result = await db.execute(
+        select(PriceDaily)
+        .where(PriceDaily.stock_id == stock.id, PriceDaily.date >= since)
+        .order_by(PriceDaily.date)
+    )
+    prices = price_result.scalars().all()
+
+    if len(prices) < 20:
+        return JSONResponse(content={"error": "Insufficient price data"}, status_code=422)
+
+    closes = pd.Series([float(p.close) for p in prices])
+    highs  = pd.Series([float(p.high)  for p in prices])
+    lows   = pd.Series([float(p.low)   for p in prices])
+    current_price = float(closes.iloc[-1])
+
+    ma20 = round(float(closes.tail(20).mean()), 4) if len(closes) >= 20 else None
+    ma60 = round(float(closes.tail(60).mean()), 4) if len(closes) >= 60 else None
+
+    sr      = _find_support_resistance(highs, lows, closes, current_price)
+    targets = _calc_price_targets(closes, highs, lows, current_price)
+
+    # US 종목: yfinance 애널리스트 컨센서스 목표가
+    analyst_target = None
+    if market_upper == "US":
+        try:
+            import yfinance as yf
+            info = yf.Ticker(symbol_upper).fast_info
+            # fast_info doesn't have targetMeanPrice; use .info but with timeout
+            ticker_info = yf.Ticker(symbol_upper).info
+            val = ticker_info.get("targetMeanPrice")
+            if val is not None:
+                analyst_target = round(float(val), 2)
+        except Exception as e:
+            logger.debug(f"yfinance analyst target failed for {symbol_upper}: {e}")
+
+    return JSONResponse(content=_sanitize({
+        "symbol": symbol_upper,
+        "market": market_upper,
+        "currentPrice": current_price,
+        "ma20": ma20,
+        "ma60": ma60,
+        "support": sr["support"],
+        "resistance": sr["resistance"],
+        "priceTargets": targets,
+        "analystTarget": analyst_target,
     }))
