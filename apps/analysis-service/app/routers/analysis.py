@@ -410,6 +410,130 @@ def _calc_price_targets(
     }
 
 
+# ── Forward P/E 목표가 + 시나리오 ────────────────────────────────────────────
+
+# 2024-2025 US 섹터별 기준 P/E (S&P500 구성 섹터 중앙값)
+_SECTOR_PE: dict[str, float] = {
+    "Technology":              28.0,
+    "Information Technology":  28.0,
+    "Communication Services":  22.0,
+    "Healthcare":              22.0,
+    "Consumer Discretionary":  24.0,
+    "Consumer Staples":        20.0,
+    "Financials":              14.0,
+    "Financial Services":      14.0,
+    "Energy":                  12.0,
+    "Industrials":             20.0,
+    "Basic Materials":         17.0,
+    "Materials":               17.0,
+    "Real Estate":             35.0,
+    "Utilities":               18.0,
+}
+_DEFAULT_PE = 20.0  # S&P500 장기 평균
+
+
+def _fetch_yfinance_fundamentals(symbol: str) -> dict:
+    """yfinance에서 펀더멘털 + 애널리스트 데이터 수집 (US 전용)."""
+    try:
+        import yfinance as yf
+        info = yf.Ticker(symbol).info
+        def _n(key): return info.get(key)
+        return {
+            "forwardEps":              _n("forwardEps"),
+            "trailingEps":             _n("trailingEps"),
+            "trailingPE":              _n("trailingPE"),
+            "sector":                  _n("sector") or "",
+            "targetMeanPrice":         _n("targetMeanPrice"),
+            "targetHighPrice":         _n("targetHighPrice"),
+            "targetLowPrice":          _n("targetLowPrice"),
+            "numberOfAnalystOpinions": _n("numberOfAnalystOpinions"),
+            "earningsGrowth":          _n("earningsGrowth"),
+        }
+    except Exception as e:
+        logger.debug(f"yfinance fundamentals failed for {symbol}: {e}")
+        return {}
+
+
+def _calc_forward_pe_target(fund: dict, current_price: float) -> dict | None:
+    """Forward P/E 기반 1년 목표가 산출."""
+    forward_eps = fund.get("forwardEps")
+    if not forward_eps or forward_eps <= 0:
+        return None
+
+    trailing_eps = fund.get("trailingEps")
+    trailing_pe  = fund.get("trailingPE")
+    sector       = fund.get("sector", "")
+
+    sector_pe = _SECTOR_PE.get(sector, _DEFAULT_PE)
+
+    # 적정 P/E: trailing P/E(40%)와 섹터 기준 P/E(60%) 블렌드
+    # 단, trailing P/E가 과열(섹터의 2배 초과) 또는 음수면 섹터 기준만 사용
+    if trailing_pe and 5 < trailing_pe < sector_pe * 2.0:
+        fair_pe = round(trailing_pe * 0.4 + sector_pe * 0.6, 1)
+    else:
+        fair_pe = sector_pe
+
+    target = round(float(forward_eps) * fair_pe, 2)
+
+    eps_growth = None
+    if trailing_eps and trailing_eps > 0 and forward_eps:
+        eps_growth = round((float(forward_eps) - float(trailing_eps)) / float(trailing_eps), 4)
+
+    upside = round((target - current_price) / current_price, 4) if current_price > 0 else None
+
+    return {
+        "target":     target,
+        "upside":     upside,
+        "forwardEps": round(float(forward_eps), 4),
+        "fairPE":     fair_pe,
+        "sectorPE":   sector_pe,
+        "sector":     sector,
+        "epsGrowth":  eps_growth,
+    }
+
+
+def _calc_scenarios(
+    fund: dict,
+    pe_result: dict | None,
+    current_price: float,
+) -> dict:
+    """Bull / Base / Bear 시나리오 산출."""
+    target_mean  = fund.get("targetMeanPrice")
+    target_high  = fund.get("targetHighPrice")
+    target_low   = fund.get("targetLowPrice")
+    analyst_cnt  = fund.get("numberOfAnalystOpinions")
+    pe_target    = pe_result["target"] if pe_result else None
+
+    # Base: Forward P/E와 애널리스트 컨센서스 평균 (둘 다 없으면 None)
+    if pe_target and target_mean:
+        base  = round((pe_target + float(target_mean)) / 2, 2)
+        source = "pe+analyst"
+    elif pe_target:
+        base  = pe_target
+        source = "pe"
+    elif target_mean:
+        base  = round(float(target_mean), 2)
+        source = "analyst"
+    else:
+        return {}
+
+    # Bull: 애널리스트 최고 목표가 or base × 1.20
+    bull = round(float(target_high), 2) if target_high else round(base * 1.20, 2)
+    # Bear: 애널리스트 최저 목표가 or base × 0.80
+    bear = round(float(target_low),  2) if target_low  else round(base * 0.80, 2)
+
+    def pct(price: float) -> float | None:
+        return round((price - current_price) / current_price, 4) if current_price > 0 else None
+
+    return {
+        "bull":          {"price": bull, "upside": pct(bull)},
+        "base":          {"price": base, "upside": pct(base)},
+        "bear":          {"price": bear, "upside": pct(bear)},
+        "analystCount":  analyst_cnt,
+        "source":        source,
+    }
+
+
 @router.get("/technical-levels")
 async def get_technical_levels(
     symbol: str = Query(..., description="종목 심볼"),
@@ -417,7 +541,7 @@ async def get_technical_levels(
     days: int = Query(90, description="조회 기간(일)"),
     db: AsyncSession = Depends(get_db),
 ):
-    """지지선·저항선 + 이동평균 + 가격 전망 범위 반환."""
+    """지지선·저항선 + 이동평균 + 단기 가격 범위 + 1년 Forward P/E 전망."""
     market_upper = market.upper()
     symbol_upper = symbol.upper()
 
@@ -452,28 +576,23 @@ async def get_technical_levels(
     sr      = _find_support_resistance(highs, lows, closes, current_price)
     targets = _calc_price_targets(closes, highs, lows, current_price)
 
-    # US 종목: yfinance 애널리스트 컨센서스 목표가
-    analyst_target = None
+    # US 전용: Forward P/E 목표가 + 시나리오
+    forward_pe  = None
+    scenarios   = None
     if market_upper == "US":
-        try:
-            import yfinance as yf
-            info = yf.Ticker(symbol_upper).fast_info
-            # fast_info doesn't have targetMeanPrice; use .info but with timeout
-            ticker_info = yf.Ticker(symbol_upper).info
-            val = ticker_info.get("targetMeanPrice")
-            if val is not None:
-                analyst_target = round(float(val), 2)
-        except Exception as e:
-            logger.debug(f"yfinance analyst target failed for {symbol_upper}: {e}")
+        fund        = _fetch_yfinance_fundamentals(symbol_upper)
+        forward_pe  = _calc_forward_pe_target(fund, current_price)
+        scenarios   = _calc_scenarios(fund, forward_pe, current_price) or None
 
     return JSONResponse(content=_sanitize({
-        "symbol": symbol_upper,
-        "market": market_upper,
+        "symbol":       symbol_upper,
+        "market":       market_upper,
         "currentPrice": current_price,
-        "ma20": ma20,
-        "ma60": ma60,
-        "support": sr["support"],
-        "resistance": sr["resistance"],
+        "ma20":         ma20,
+        "ma60":         ma60,
+        "support":      sr["support"],
+        "resistance":   sr["resistance"],
         "priceTargets": targets,
-        "analystTarget": analyst_target,
+        "forwardPE":    forward_pe,
+        "scenarios":    scenarios,
     }))
