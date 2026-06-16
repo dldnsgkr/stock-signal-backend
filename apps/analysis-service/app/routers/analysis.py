@@ -163,6 +163,30 @@ def _safe_int(val) -> int:
         return 0
 
 
+def _get_price_map(date: str, market: str) -> dict:
+    """주어진 날짜 전체 시장 종가·등락률 딕셔너리 반환. 실패 시 빈 딕셔너리."""
+    try:
+        from pykrx import stock as pkrx_stock
+        df = pkrx_stock.get_market_ohlcv(date, market=market)
+        if df is None or df.empty:
+            return {}
+        result = {}
+        for code, row in df.iterrows():
+            try:
+                close_val = row.get("종가", 0) or 0
+                rate_val  = row.get("등락률", 0) or 0
+                result[str(code)] = {
+                    "currentPrice": int(float(close_val)),
+                    "changeRate":   round(float(rate_val), 2),
+                }
+            except (TypeError, ValueError):
+                pass
+        return result
+    except Exception as e:
+        logger.warning(f"_get_price_map 실패 ({date} {market}): {e}")
+        return {}
+
+
 # MDCSTAT02202 (투자자별 거래실적 일별추이 일반, inqTpCd=2) TRDVAL 컬럼 → 영문 키 매핑
 # pykrx source 확인: TRDVAL1=기관합계, TRDVAL2=외국인, TRDVAL3=개인, TRDVAL4=기타법인+기타
 _KRX_COL_MAP = [
@@ -306,14 +330,20 @@ async def get_foreign_top_stocks(
     df["_netval"] = df["NETBID_TRDVAL"].apply(_safe_int)
     df = df.sort_values("_netval", ascending=False)
 
+    price_map = _get_price_map(date, market_upper)
+
     def to_stock(row: dict) -> dict:
+        code = str(row.get("ISU_SRT_CD", ""))
+        price_info = price_map.get(code, {})
         return {
-            "code":      str(row.get("ISU_SRT_CD", "")),
-            "name":      str(row.get("ISU_NM", "")),
-            "netBuyVol": _safe_int(row.get("NETBID_TRDVOL", 0)),
-            "netBuyVal": _safe_int(row.get("NETBID_TRDVAL", 0)),
-            "buyVal":    _safe_int(row.get("BID_TRDVAL", 0)),
-            "sellVal":   _safe_int(row.get("ASK_TRDVAL", 0)),
+            "code":         code,
+            "name":         str(row.get("ISU_NM", "")),
+            "netBuyVol":    _safe_int(row.get("NETBID_TRDVOL", 0)),
+            "netBuyVal":    _safe_int(row.get("NETBID_TRDVAL", 0)),
+            "buyVal":       _safe_int(row.get("BID_TRDVAL", 0)),
+            "sellVal":      _safe_int(row.get("ASK_TRDVAL", 0)),
+            "currentPrice": price_info.get("currentPrice"),
+            "changeRate":   price_info.get("changeRate"),
         }
 
     records = df.to_dict("records")
@@ -325,6 +355,86 @@ async def get_foreign_top_stocks(
         "date": date,
         "topBuy": top_buy,
         "topSell": top_sell,
+    }))
+
+
+_INVESTOR_TYPE_MAP = {
+    "institution": "8000",
+    "foreign":     "9000",
+    "individual":  "5000",
+}
+
+
+@router.get("/investor-top-stocks")
+async def get_investor_top_stocks(
+    market: str = Query("KOSPI", description="KOSPI 또는 KOSDAQ"),
+    date: Optional[str] = Query(None, description="YYYYMMDD, 기본값 오늘"),
+    investor_type: str = Query("institution", description="institution | foreign | individual"),
+    limit: int = Query(20, description="상위 종목 수"),
+):
+    """투자자 유형별(기관/외국인/개인) 순매수·순매도 상위 종목 + 현재가·등락률"""
+    try:
+        from pykrx.website.krx.market.core import 투자자별_순매수상위종목
+    except ImportError:
+        return JSONResponse(content={"error": "pykrx 미설치"}, status_code=500)
+
+    today = datetime.date.today()
+    if not date:
+        date = today.strftime("%Y%m%d")
+
+    market_upper = market.upper()
+    if market_upper not in ("KOSPI", "KOSDAQ"):
+        return JSONResponse(content={"error": "market must be KOSPI or KOSDAQ"}, status_code=400)
+
+    mkt_id   = "STK" if market_upper == "KOSPI" else "KSQ"
+    invst_tp = _INVESTOR_TYPE_MAP.get(investor_type, "8000")
+
+    try:
+        core = 투자자별_순매수상위종목()
+        df   = core.fetch(date, date, mkt_id, invst_tp)
+    except Exception as e:
+        err_str = str(e)
+        logger.error(f"investor-top-stocks error ({market_upper} {date} {investor_type}): {err_str}")
+        if any(kw in err_str for kw in ("LOGOUT", "Expecting value", "column 1", "400 Client")):
+            return JSONResponse(content={"error": "KRX 인증 필요"}, status_code=503)
+        return JSONResponse(content={"error": f"데이터 조회 실패: {err_str}"}, status_code=500)
+
+    if df is None or df.empty:
+        return JSONResponse(content={
+            "market": market_upper, "date": date,
+            "investorType": investor_type, "topBuy": [], "topSell": [],
+        })
+
+    df = df.fillna(0)
+    df["_netval"] = df["NETBID_TRDVAL"].apply(_safe_int)
+    df = df.sort_values("_netval", ascending=False)
+
+    price_map = _get_price_map(date, market_upper)
+
+    def to_stock(row: dict) -> dict:
+        code = str(row.get("ISU_SRT_CD", ""))
+        price_info = price_map.get(code, {})
+        return {
+            "code":         code,
+            "name":         str(row.get("ISU_NM", "")),
+            "netBuyVol":    _safe_int(row.get("NETBID_TRDVOL", 0)),
+            "netBuyVal":    _safe_int(row.get("NETBID_TRDVAL", 0)),
+            "buyVal":       _safe_int(row.get("BID_TRDVAL", 0)),
+            "sellVal":      _safe_int(row.get("ASK_TRDVAL", 0)),
+            "currentPrice": price_info.get("currentPrice"),
+            "changeRate":   price_info.get("changeRate"),
+        }
+
+    records  = df.to_dict("records")
+    top_buy  = [to_stock(r) for r in records[:limit]           if _safe_int(r.get("NETBID_TRDVAL", 0)) > 0]
+    top_sell = [to_stock(r) for r in reversed(records[-limit:]) if _safe_int(r.get("NETBID_TRDVAL", 0)) < 0]
+
+    return JSONResponse(content=_sanitize({
+        "market":       market_upper,
+        "date":         date,
+        "investorType": investor_type,
+        "topBuy":       top_buy,
+        "topSell":      top_sell,
     }))
 
 

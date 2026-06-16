@@ -32,4 +32,19 @@ export class MarketController {
   ) {
     return this.marketService.getInvestorTrading(market, fromdate, todate);
   }
+
+  @Get('investor-top-stocks')
+  @ApiOperation({ summary: '투자자 유형별 순매수·순매도 상위 종목 + 현재가' })
+  @ApiQuery({ name: 'market', required: false, enum: ['KOSPI', 'KOSDAQ'] })
+  @ApiQuery({ name: 'date', required: false, description: 'YYYYMMDD' })
+  @ApiQuery({ name: 'investor_type', required: false, enum: ['institution', 'foreign', 'individual'] })
+  @ApiQuery({ name: 'limit', required: false })
+  getInvestorTopStocks(
+    @Query('market') market = 'KOSPI',
+    @Query('date') date?: string,
+    @Query('investor_type') investorType = 'institution',
+    @Query('limit') limit?: string,
+  ) {
+    return this.marketService.getInvestorTopStocks(market, date, investorType, limit ? Number(limit) : 20);
+  }
 }

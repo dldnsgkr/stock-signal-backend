@@ -12,6 +12,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AlertModule } from './modules/alert/alert.module';
 import { SubscriptionModule } from './modules/subscriptions/subscription.module';
 import { MarketModule } from './modules/market/market.module';
+import { UsersModule } from './modules/users/users.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { MarketModule } from './modules/market/market.module';
     SchedulerModule,
     SubscriptionModule,
     MarketModule,
+    UsersModule,
   ],
 })
 export class AppModule {}

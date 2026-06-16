@@ -24,6 +24,26 @@ export class MarketService {
     }
   }
 
+  async getInvestorTopStocks(market: string, date?: string, investorType = 'institution', limit = 20) {
+    const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
+    const params = new URLSearchParams({
+      market: market.toUpperCase(),
+      investor_type: investorType,
+      limit: String(limit),
+    });
+    if (date) params.set('date', date);
+    try {
+      const res = await axios.get(
+        `${baseUrl}/analysis/investor-top-stocks?${params}`,
+        { timeout: 60000, validateStatus: () => true },
+      );
+      return res.data;
+    } catch (err: any) {
+      this.logger.error(`investor-top-stocks failed: ${err.message}`);
+      return { error: err.message };
+    }
+  }
+
   async getInvestorTrading(market: string, fromdate?: string, todate?: string) {
     const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
     const params = new URLSearchParams({ market: market.toUpperCase() });
