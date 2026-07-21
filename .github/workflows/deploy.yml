@@ -48,13 +48,20 @@ jobs:
             .venv/bin/pip install -r requirements.txt
             cd ~/stock-signal-backend
 
-            echo "=== PM2 reload: API only (worker keeps running) ==="
+            echo "=== PM2 reload: API ==="
             pm2 reload stock-signal-api || pm2 start ecosystem.config.js --only stock-signal-api --env production
 
-            echo "=== PM2 start worker if not running ==="
-            pm2 describe stock-signal-worker > /dev/null 2>&1 \
-              && echo "worker already running — skipping restart" \
-              || pm2 start ecosystem.config.js --only stock-signal-worker --env production
+            echo "=== PM2 restart worker ==="
+            # 재시작을 건너뛰면 worker 가 옛 빌드를 계속 실행한다 (실제로 38일간 그래서
+            # 수익률 평가가 두 달간 잘못 기록됐다). 파이프라인이 돌고 있으면 끝나길
+            # 최대 10분 기다린 뒤 재시작한다.
+            for i in $(seq 1 20); do
+              ACTIVE=$(redis-cli llen bull:run-pipeline:active 2>/dev/null || echo 0)
+              if [ "$ACTIVE" = "0" ]; then break; fi
+              echo "pipeline running — waiting ($i/20)"
+              sleep 30
+            done
+            pm2 restart stock-signal-worker || pm2 start ecosystem.config.js --only stock-signal-worker --env production
 
             echo "=== PM2 reload analysis ==="
             pm2 reload stock-signal-analysis || pm2 start ecosystem.config.js --only stock-signal-analysis --env production

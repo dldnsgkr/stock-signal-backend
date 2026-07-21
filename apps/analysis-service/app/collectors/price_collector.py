@@ -48,6 +48,14 @@ async def collect_prices(
                 skipped += 1
                 continue
 
+            # 장중이거나 미완성 봉이면 yfinance 가 OHLC 를 NaN 으로 준다.
+            # 그대로 저장하면 수익률 계산이 오염되므로 버린다.
+            df = df.dropna(subset=["Open", "High", "Low", "Close"])
+            df = df.fillna({"Volume": 0})
+            if df.empty:
+                skipped += 1
+                continue
+
             rows = [
                 {
                     "stock_id": stock.id,

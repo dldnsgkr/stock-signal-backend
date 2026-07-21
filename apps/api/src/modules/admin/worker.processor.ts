@@ -618,10 +618,18 @@ export class EvaluationProcessor {
     return { evaluated, scanned };
   }
 
+  // 목표일 직전 가격이 이보다 오래되면(상장폐지·수집중단) 평가하지 않는다.
+  // 가장 가까운 가격을 무조건 쓰면 entry_price 와 같은 값이 잡혀 수익률이 0으로 왜곡된다.
+  // 장기 연휴를 감안해 7일로 둔다.
+  private static readonly PRICE_MAX_STALE_DAYS = 7;
+
   private async getClosestPrice(stockId: number, targetDate: Date): Promise<number | null> {
     if (targetDate > new Date()) return null; // 아직 해당 날짜가 오지 않음
+    const oldest = new Date(
+      targetDate.getTime() - EvaluationProcessor.PRICE_MAX_STALE_DAYS * 86400000,
+    );
     const price = await this.prisma.priceDaily.findFirst({
-      where: { stockId, date: { lte: targetDate } },
+      where: { stockId, date: { lte: targetDate, gte: oldest } },
       orderBy: { date: 'desc' },
     });
     return price ? Number(price.close) : null;
