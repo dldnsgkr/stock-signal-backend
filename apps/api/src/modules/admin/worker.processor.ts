@@ -2,6 +2,7 @@ import { Processor, Process, InjectQueue } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { Job, Queue } from 'bull';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import axios from 'axios';
 import { throwForRetryPolicy } from '../../common/job-errors';
@@ -556,47 +557,65 @@ export class EvaluationProcessor {
     const cutoff30d = new Date(now.getTime() - 30 * 86400000);
 
     // (1) result 없는 신규 (1일+), (2) return7d 미집계 (7일+), (3) return30d 미집계 (30일+)
-    const recs = await this.prisma.recommendation.findMany({
-      where: {
-        OR: [
-          { recommendedAt: { lte: cutoff1d },  result: { is: null } },
-          { recommendedAt: { lte: cutoff7d },  result: { is: { return7d: null } } },
-          { recommendedAt: { lte: cutoff30d }, result: { is: { return30d: null } } },
-        ],
-      },
-      include: { stock: true, result: true },
-    });
+    const dueFilter: Prisma.RecommendationWhereInput = {
+      OR: [
+        { recommendedAt: { lte: cutoff1d },  result: { is: null } },
+        { recommendedAt: { lte: cutoff7d },  result: { is: { return7d: null } } },
+        { recommendedAt: { lte: cutoff30d }, result: { is: { return30d: null } } },
+      ],
+    };
 
-    this.logger.log(`Found ${recs.length} recommendations needing evaluation`);
+    // 평가가 밀리면 대상이 수만 건이 되어, 한 번에 적재하면 PM2 메모리 상한(1500M)에 걸려 죽는다.
+    // id 커서로 끊어 읽는다. stock 관계는 이 루프에서 쓰지 않으므로 include 하지 않는다.
+    const BATCH_SIZE = 2000;
+    let cursorId = 0;
+    let scanned = 0;
     let evaluated = 0;
 
-    for (const rec of recs) {
-      const entry    = Number(rec.entryPrice);
-      const existing = rec.result;
-
-      const [price1d, price7d, price30d] = await Promise.all([
-        existing?.return1d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 86400000))       : Promise.resolve(null),
-        existing?.return7d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 7  * 86400000)) : Promise.resolve(null),
-        existing?.return30d == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 30 * 86400000)) : Promise.resolve(null),
-      ]);
-
-      const updates: Record<string, number | boolean | null> = {};
-      if (price1d  !== null) { const r = (price1d  - entry) / entry; updates.return1d  = r; updates.hit1d  = r > 0; }
-      if (price7d  !== null) { const r = (price7d  - entry) / entry; updates.return7d  = r; updates.hit7d  = r > 0; }
-      if (price30d !== null) { const r = (price30d - entry) / entry; updates.return30d = r; updates.hit30d = r > 0; }
-
-      if (Object.keys(updates).length === 0) continue;
-
-      await this.prisma.recommendationResult.upsert({
-        where:  { recommendationId: rec.id },
-        create: { recommendationId: rec.id, ...updates },
-        update: updates,
+    for (;;) {
+      const recs = await this.prisma.recommendation.findMany({
+        where: { AND: [dueFilter, { id: { gt: cursorId } }] },
+        include: { result: true },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
       });
-      evaluated++;
+
+      if (recs.length === 0) break;
+
+      // 갱신되지 않는 행(updates 없음)도 커서가 넘어가므로 무한 루프가 되지 않는다.
+      cursorId = recs[recs.length - 1].id;
+      scanned += recs.length;
+
+      for (const rec of recs) {
+        const entry    = Number(rec.entryPrice);
+        const existing = rec.result;
+
+        const [price1d, price7d, price30d] = await Promise.all([
+          existing?.return1d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 86400000))       : Promise.resolve(null),
+          existing?.return7d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 7  * 86400000)) : Promise.resolve(null),
+          existing?.return30d == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 30 * 86400000)) : Promise.resolve(null),
+        ]);
+
+        const updates: Record<string, number | boolean | null> = {};
+        if (price1d  !== null) { const r = (price1d  - entry) / entry; updates.return1d  = r; updates.hit1d  = r > 0; }
+        if (price7d  !== null) { const r = (price7d  - entry) / entry; updates.return7d  = r; updates.hit7d  = r > 0; }
+        if (price30d !== null) { const r = (price30d - entry) / entry; updates.return30d = r; updates.hit30d = r > 0; }
+
+        if (Object.keys(updates).length === 0) continue;
+
+        await this.prisma.recommendationResult.upsert({
+          where:  { recommendationId: rec.id },
+          create: { recommendationId: rec.id, ...updates },
+          update: updates,
+        });
+        evaluated++;
+      }
+
+      this.logger.log(`Evaluation progress: evaluated=${evaluated} scanned=${scanned} cursor=${cursorId}`);
     }
 
-    this.logger.log(`Evaluated ${evaluated} recommendations`);
-    return { evaluated };
+    this.logger.log(`Evaluated ${evaluated} recommendations (scanned ${scanned})`);
+    return { evaluated, scanned };
   }
 
   private async getClosestPrice(stockId: number, targetDate: Date): Promise<number | null> {
