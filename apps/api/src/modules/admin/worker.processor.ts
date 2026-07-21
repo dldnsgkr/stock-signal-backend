@@ -587,13 +587,25 @@ export class EvaluationProcessor {
       scanned += recs.length;
 
       for (const rec of recs) {
-        const entry    = Number(rec.entryPrice);
         const existing = rec.result;
+        const needs1d  = existing?.return1d  == null;
+        const needs7d  = existing?.return7d  == null;
+        const needs30d = existing?.return30d == null;
+
+        if (!needs1d && !needs7d && !needs30d) continue;
+
+        // recommendations.entry_price 는 추천 시점의 '원시가' 스냅샷이다.
+        // 반면 price_daily 는 auto_adjust=True 로 수집돼 배당·액면병합 때 과거 종가가
+        // 소급 재조정된다. 두 기준을 빼면 수익률이 어긋난다 — 1:250 병합 종목에서
+        // 24,900% 같은 값이 나와 전체 평균이 -1.3% 에서 +13.5% 로 뒤집혔다.
+        // 진입가도 같은 조정 시계열에서 다시 뽑아 기준을 맞춘다.
+        const entry = await this.getClosestPrice(rec.stockId, rec.recommendedAt);
+        if (entry === null || entry === 0) continue;
 
         const [price1d, price7d, price30d] = await Promise.all([
-          existing?.return1d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 86400000))       : Promise.resolve(null),
-          existing?.return7d  == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 7  * 86400000)) : Promise.resolve(null),
-          existing?.return30d == null ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 30 * 86400000)) : Promise.resolve(null),
+          needs1d  ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 86400000))       : Promise.resolve(null),
+          needs7d  ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 7  * 86400000)) : Promise.resolve(null),
+          needs30d ? this.getClosestPrice(rec.stockId, new Date(rec.recommendedAt.getTime() + 30 * 86400000)) : Promise.resolve(null),
         ]);
 
         const updates: Record<string, number | boolean | null> = {};
