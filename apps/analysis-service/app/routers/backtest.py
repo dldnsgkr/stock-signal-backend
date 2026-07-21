@@ -102,8 +102,9 @@ async def rescore(body: RescoreRequest, db: AsyncSession = Depends(get_db)):
         SELECT rr.id, rr.executed_at
         FROM recommendation_runs rr
         WHERE rr.market_code = :market
-          -- asyncpg 는 ':param IS NULL' 만으로는 타입을 추론하지 못한다(AmbiguousParameterError).
-          -- 양쪽 모두 명시적으로 캐스트한다.
+          -- 파라미터를 그냥 IS NULL 로만 쓰면 asyncpg 가 타입을 추론하지 못해
+          -- AmbiguousParameterError 가 난다. 양쪽 모두 명시적으로 캐스트한다.
+          -- (주석에 콜론+이름을 쓰면 text() 가 바인드 파라미터로 오인하므로 주의)
           AND (CAST(:fromdate AS date) IS NULL OR rr.executed_at >= CAST(:fromdate AS date))
           AND (CAST(:todate   AS date) IS NULL OR rr.executed_at <  CAST(:todate AS date) + 1)
           AND EXISTS (
