@@ -11,6 +11,7 @@
 """
 
 import numpy as np
+from typing import Optional
 
 BUY_THRESHOLD = 65
 WATCH_THRESHOLD = 45
@@ -219,20 +220,23 @@ def _sentiment_score(features: dict) -> tuple[float, float]:
 
 
 # ── 앙상블 합산 ────────────────────────────────────────────────────────────
-def calculate_total_score(features: dict) -> dict:
+def calculate_total_score(features: dict, base_weights: Optional[dict] = None) -> dict:
+    """base_weights 를 주면 그 가중치로 채점한다. 백테스트(재점수화)에서 쓴다."""
+    base = base_weights or BASE_WEIGHTS
+
     mom_score, mom_q = _momentum_score(features)
     val_score, val_q = _value_score(features)
     sent_score, sent_q = _sentiment_score(features)
 
     # 데이터 품질 기반 가중치 재분배
     raw_w = {
-        "momentum":  BASE_WEIGHTS["momentum"]  * mom_q,
-        "value":     BASE_WEIGHTS["value"]     * val_q,
-        "sentiment": BASE_WEIGHTS["sentiment"] * sent_q,
+        "momentum":  base["momentum"]  * mom_q,
+        "value":     base["value"]     * val_q,
+        "sentiment": base["sentiment"] * sent_q,
     }
     total_w = sum(raw_w.values())
     if total_w == 0:
-        weights = BASE_WEIGHTS
+        weights = base
     else:
         weights = {k: v / total_w for k, v in raw_w.items()}
 

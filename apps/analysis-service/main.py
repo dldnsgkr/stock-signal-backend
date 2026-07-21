@@ -8,7 +8,7 @@ load_dotenv()                       # 로컬 개발: ./apps/analysis-service/.en
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import collect, analysis, translate
+from app.routers import collect, analysis, translate, backtest
 from app.config import settings
 
 app = FastAPI(
@@ -27,6 +27,7 @@ app.add_middleware(
 app.include_router(collect.router)
 app.include_router(analysis.router)
 app.include_router(translate.router)
+app.include_router(backtest.router)
 
 
 @app.get("/health")
