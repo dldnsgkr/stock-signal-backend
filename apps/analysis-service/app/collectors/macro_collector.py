@@ -24,11 +24,13 @@ KR_MACRO_TICKERS = {
 }
 
 
-async def collect_macro_indicators(db: AsyncSession, market_code: str = "US") -> dict:
+async def collect_macro_indicators(
+    db: AsyncSession, market_code: str = "US", days: int = 10
+) -> dict:
     tickers_map = US_MACRO_TICKERS if market_code == "US" else KR_MACRO_TICKERS
     collected = 0
     errors = 0
-    start = (datetime.utcnow() - timedelta(days=5)).strftime("%Y-%m-%d")
+    start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
     end = (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     for indicator_type, ticker_symbol in tickers_map.items():
@@ -40,9 +42,21 @@ async def collect_macro_indicators(db: AsyncSession, market_code: str = "US") ->
                 logger.warning(f"No macro data for {indicator_type} ({ticker_symbol})")
                 continue
 
-            latest_row = df.iloc[-1]
-            value = float(latest_row["Close"])
-            observed_at = df.index[-1].to_pydatetime().replace(tzinfo=None)
+            df = df.dropna(subset=["Close"])
+            if df.empty:
+                continue
+
+            # 조회 구간을 전부 저장한다. 예전에는 df.iloc[-1] 한 행만 넣어서,
+            # 파이프라인이 하루라도 거르면 그날 지수가 영구히 비었다.
+            rows = [
+                {
+                    "market_code": market_code,
+                    "indicator_type": indicator_type,
+                    "value": float(row["Close"]),
+                    "observed_at": idx.to_pydatetime().replace(tzinfo=None),
+                }
+                for idx, row in df.iterrows()
+            ]
 
             await db.execute(
                 text("""
@@ -51,15 +65,13 @@ async def collect_macro_indicators(db: AsyncSession, market_code: str = "US") ->
                     ON CONFLICT (market_code, indicator_type, observed_at) DO UPDATE SET
                         value = EXCLUDED.value
                 """),
-                {
-                    "market_code": market_code,
-                    "indicator_type": indicator_type,
-                    "value": value,
-                    "observed_at": observed_at,
-                },
+                rows,
             )
-            collected += 1
-            logger.info(f"{indicator_type}: {value:.4f} ({observed_at.date()})")
+            collected += len(rows)
+            logger.info(
+                f"{indicator_type}: {len(rows)} rows "
+                f"({rows[0]['observed_at'].date()} ~ {rows[-1]['observed_at'].date()})"
+            )
 
         except Exception as e:
             logger.error(f"Error collecting macro {indicator_type}: {e}")

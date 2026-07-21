@@ -15,6 +15,7 @@ class CollectRequest(BaseModel):
     market: str = "US"
     offset: int = 0
     limit: int = 300
+    days: int | None = None   # 지수 이력 백필용 (macro)
 
 
 @router.post("/prices")
@@ -31,7 +32,8 @@ async def trigger_collect_news(body: CollectRequest, db: AsyncSession = Depends(
 
 @router.post("/macro")
 async def trigger_collect_macro(body: CollectRequest, db: AsyncSession = Depends(get_db)):
-    result = await collect_macro_indicators(db, market_code=body.market)
+    kwargs = {"days": body.days} if body.days else {}
+    result = await collect_macro_indicators(db, market_code=body.market, **kwargs)
     return {"status": "ok", "market": body.market, **result}
 
 

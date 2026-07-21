@@ -567,6 +567,10 @@ export class EvaluationProcessor {
 
     // 평가가 밀리면 대상이 수만 건이 되어, 한 번에 적재하면 PM2 메모리 상한(1500M)에 걸려 죽는다.
     // id 커서로 끊어 읽는다. stock 관계는 이 루프에서 쓰지 않으므로 include 하지 않는다.
+    // 지수는 시장별 수백 행뿐이라 통째로 올려두고 메모리에서 조회한다.
+    // (추천 건마다 DB 를 치면 평가 시간이 몇 배로 늘어난다)
+    const benchmarks = await this.loadBenchmarkSeries();
+
     const BATCH_SIZE = 2000;
     let cursorId = 0;
     let scanned = 0;
@@ -575,7 +579,7 @@ export class EvaluationProcessor {
     for (;;) {
       const recs = await this.prisma.recommendation.findMany({
         where: { AND: [dueFilter, { id: { gt: cursorId } }] },
-        include: { result: true },
+        include: { result: true, run: { select: { marketCode: true } } },
         orderBy: { id: 'asc' },
         take: BATCH_SIZE,
       });
@@ -615,6 +619,28 @@ export class EvaluationProcessor {
 
         if (Object.keys(updates).length === 0) continue;
 
+        // 같은 기간 지수 수익률과 초과수익(alpha). 지수 값이 없으면 해당 구간만 건너뛴다.
+        const series    = benchmarks.get(rec.run.marketCode);
+        const benchBase = this.benchmarkAt(series, rec.recommendedAt);
+        if (benchBase !== null && benchBase !== 0) {
+          const benchReturn = (days: number): number | null => {
+            const b = this.benchmarkAt(
+              series, new Date(rec.recommendedAt.getTime() + days * 86400000),
+            );
+            return b === null ? null : (b - benchBase) / benchBase;
+          };
+          const setAlpha = (days: number, retKey: string, benchKey: string, alphaKey: string) => {
+            if (updates[retKey] === undefined) return;
+            const br = benchReturn(days);
+            if (br === null) return;
+            updates[benchKey] = br;
+            updates[alphaKey] = (updates[retKey] as number) - br;
+          };
+          setAlpha(1,  'return1d',  'benchmarkReturn1d',  'alpha1d');
+          setAlpha(7,  'return7d',  'benchmarkReturn7d',  'alpha7d');
+          setAlpha(30, 'return30d', 'benchmarkReturn30d', 'alpha30d');
+        }
+
         await this.prisma.recommendationResult.upsert({
           where:  { recommendationId: rec.id },
           create: { recommendationId: rec.id, ...updates },
@@ -628,6 +654,51 @@ export class EvaluationProcessor {
 
     this.logger.log(`Evaluated ${evaluated} recommendations (scanned ${scanned})`);
     return { evaluated, scanned };
+  }
+
+  // 시장별 벤치마크 지수. macro_indicators.indicator_type 값과 일치해야 한다.
+  private static readonly BENCHMARK_BY_MARKET: Record<string, string> = {
+    US: 'SP500',
+    KR: 'KOSPI',
+  };
+
+  private async loadBenchmarkSeries(): Promise<Map<string, { t: number; v: number }[]>> {
+    const rows = await this.prisma.macroIndicator.findMany({
+      where: {
+        indicatorType: { in: Object.values(EvaluationProcessor.BENCHMARK_BY_MARKET) },
+      },
+      select: { marketCode: true, indicatorType: true, observedAt: true, value: true },
+      orderBy: { observedAt: 'asc' },
+    });
+
+    const series = new Map<string, { t: number; v: number }[]>();
+    for (const r of rows) {
+      // KR 시장에 SP500 이 섞여 들어오는 경우를 배제한다.
+      if (EvaluationProcessor.BENCHMARK_BY_MARKET[r.marketCode] !== r.indicatorType) continue;
+      const list = series.get(r.marketCode) ?? [];
+      list.push({ t: r.observedAt.getTime(), v: Number(r.value) });
+      series.set(r.marketCode, list);
+    }
+
+    for (const [market, list] of series) {
+      this.logger.log(`Benchmark ${market}: ${list.length} observations`);
+    }
+    return series;
+  }
+
+  // 목표일 이하 최신 지수값. 너무 오래된 값이면 쓰지 않는다(가격과 동일한 기준).
+  private benchmarkAt(
+    series: { t: number; v: number }[] | undefined,
+    target: Date,
+  ): number | null {
+    if (!series?.length) return null;
+    const tt = target.getTime();
+    if (tt > Date.now()) return null;
+    const floor = tt - EvaluationProcessor.PRICE_MAX_STALE_DAYS * 86400000;
+    for (let i = series.length - 1; i >= 0; i--) {
+      if (series[i].t <= tt) return series[i].t >= floor ? series[i].v : null;
+    }
+    return null;
   }
 
   // 목표일 직전 가격이 이보다 오래되면(상장폐지·수집중단) 평가하지 않는다.
