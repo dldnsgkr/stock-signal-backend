@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 import datetime
 import requests as _requests
 import numpy as np
@@ -198,10 +199,42 @@ _KRX_COL_MAP = [
 ]
 
 
+# KRX 조회는 10~20초가 걸리는데 페이지를 열 때마다 매번 호출한다.
+# 확정된 과거 거래일 수치는 바뀌지 않으므로 짧게 캐시한다.
+_KRX_CACHE: dict[tuple, tuple[float, list]] = {}
+_KRX_CACHE_TTL_SEC = 600
+_KRX_CACHE_MAX = 64
+
+
+def _krx_cache_get(key: tuple) -> Optional[list]:
+    hit = _KRX_CACHE.get(key)
+    if not hit:
+        return None
+    stored_at, value = hit
+    if time.time() - stored_at > _KRX_CACHE_TTL_SEC:
+        _KRX_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _krx_cache_put(key: tuple, value: list) -> None:
+    # 오래된 항목부터 정리 (조회 조합이 많지 않아 단순 방식으로 충분)
+    if len(_KRX_CACHE) >= _KRX_CACHE_MAX:
+        oldest = min(_KRX_CACHE, key=lambda k: _KRX_CACHE[k][0])
+        _KRX_CACHE.pop(oldest, None)
+    _KRX_CACHE[key] = (time.time(), value)
+
+
 def _krx_fetch_investor_daily(mkt_id: str, strt_dd: str, end_dd: str) -> list:
     """pykrx 내부 클래스 직접 호출 — 깨진 wrapper 우회 + pykrx 인증 세션 재사용.
     KRX 2026년 이후 인증 필요: EC2 환경변수 KRX_ID, KRX_PW 설정 시 자동 로그인.
     """
+    cache_key = ("investor_daily", mkt_id, strt_dd, end_dd)
+    cached = _krx_cache_get(cache_key)
+    if cached is not None:
+        logger.info(f"KRX cache hit: {cache_key}")
+        return cached
+
     try:
         from pykrx.website.krx.market.core import 투자자별_거래실적_전체시장_일별추이_일반
     except ImportError:
@@ -215,7 +248,9 @@ def _krx_fetch_investor_daily(mkt_id: str, strt_dd: str, end_dd: str) -> list:
     if df is None or df.empty:
         return []
 
-    return df.to_dict("records")
+    records = df.to_dict("records")
+    _krx_cache_put(cache_key, records)
+    return records
 
 
 @router.get("/investor-trading")
