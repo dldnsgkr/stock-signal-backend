@@ -27,8 +27,11 @@ async def collect_prices(
     if not stocks:
         return {"collected": 0, "skipped": 0, "errors": 0, "total_in_batch": 0}
 
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
+    now = datetime.now()
+    start_date = now - timedelta(days=days)
+    # yfinance 의 end 는 exclusive → +1 해야 당일 종가까지 포함된다.
+    # (KST 거래소는 타임존 차이로 하루를 더 잃어 KR 가격이 이틀씩 밀려 있었음)
+    end_date = now + timedelta(days=1)
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
 
