@@ -11,16 +11,20 @@ export class PerformanceService {
     since.setDate(since.getDate() - days);
 
     type OverviewRow = {
-      total: bigint;
+      total7d: bigint;
+      total30d: bigint;
       hit7d_count: bigint;
       hit30d_count: bigint;
       avg_return_7d: string | null;
       avg_return_30d: string | null;
     };
 
+    // 7일/30일 지표는 성숙 시점이 달라 분모를 각각 센다.
+    // (hit_7d 기준 하나로 나누면 30일 미성숙 구간에서 적중률이 0%로 왜곡됨)
     const rows = await this.prisma.$queryRaw<OverviewRow[]>`
       SELECT
-        COUNT(*)                                              AS total,
+        COUNT(*) FILTER (WHERE res.hit_7d  IS NOT NULL)      AS total7d,
+        COUNT(*) FILTER (WHERE res.hit_30d IS NOT NULL)      AS total30d,
         COUNT(*) FILTER (WHERE res.hit_7d = true)            AS hit7d_count,
         COUNT(*) FILTER (WHERE res.hit_30d = true)           AS hit30d_count,
         AVG(res.return_7d)                                   AS avg_return_7d,
@@ -31,23 +35,19 @@ export class PerformanceService {
       WHERE run.market_code   = ${market}
         AND run.executed_at   >= ${since}
         AND r.action          = 'BUY'
-        AND res.hit_7d        IS NOT NULL
     `;
 
     const row = rows[0];
-    const total = Number(row.total);
-
-    if (total === 0) {
-      return { period, totalRecommendations: 0, hitRate7d: 0, hitRate30d: 0, avgReturn7d: 0, avgReturn30d: 0 };
-    }
+    const total7d = Number(row.total7d);
+    const total30d = Number(row.total30d);
 
     return {
       period,
-      totalRecommendations: total,
-      hitRate7d: Number(row.hit7d_count) / total,
-      hitRate30d: Number(row.hit30d_count) / total,
-      avgReturn7d: row.avg_return_7d != null ? Number(row.avg_return_7d) : 0,
-      avgReturn30d: row.avg_return_30d != null ? Number(row.avg_return_30d) : 0,
+      totalRecommendations: total7d,
+      hitRate7d: total7d > 0 ? Number(row.hit7d_count) / total7d : null,
+      hitRate30d: total30d > 0 ? Number(row.hit30d_count) / total30d : null,
+      avgReturn7d: row.avg_return_7d != null ? Number(row.avg_return_7d) : null,
+      avgReturn30d: row.avg_return_30d != null ? Number(row.avg_return_30d) : null,
     };
   }
 
