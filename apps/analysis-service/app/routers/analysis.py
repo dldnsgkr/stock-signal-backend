@@ -121,26 +121,37 @@ class GenerateSellSignalsRequest(BaseModel):
 async def generate_sell_signals(body: GenerateSellSignalsRequest, db: AsyncSession = Depends(get_db)):
     sell_signals = []
 
+    # 같은 종목의 미결제 BUY 가 여러 건이면 feature 계산을 반복하지 않는다.
+    # US 는 90일 미결제 BUY 가 수만 건(유니크 종목의 수 배)이라, 건별 계산 시
+    # 10분 넘게 걸려 워커 timeout 으로 SELL 체크가 매일 실패했다.
+    stock_result_cache: dict[int, dict | None] = {}
+
     for rec in body.buy_recommendations:
-        stock = await db.get(Stock, rec.stock_id)
-        if not stock:
-            continue
+        if rec.stock_id in stock_result_cache:
+            cached = stock_result_cache[rec.stock_id]
+        else:
+            cached = None
+            stock = await db.get(Stock, rec.stock_id)
+            if stock:
+                features = await build_features(db, stock, market_code=body.market)
+                if features:
+                    score_detail = calculate_total_score(features)
+                    current_score = score_detail["total_score"]
+                    if current_score < WATCH_THRESHOLD:
+                        cached = {
+                            "current_score": current_score,
+                            "exit_price": features["current_price"],
+                            "reasons": generate_reasons(features, score_detail, "SELL"),
+                        }
+                    else:
+                        cached = {"current_score": current_score}  # SELL 아님 표식
+            stock_result_cache[rec.stock_id] = cached
 
-        features = await build_features(db, stock, market_code=body.market)
-        if not features:
-            continue
-
-        score_detail = calculate_total_score(features)
-        current_score = score_detail["total_score"]
-
-        if current_score < WATCH_THRESHOLD:
-            reasons = generate_reasons(features, score_detail, "SELL")
+        if cached and "exit_price" in cached:
             sell_signals.append({
                 "buy_recommendation_id": rec.id,
                 "stock_id": rec.stock_id,
-                "current_score": current_score,
-                "exit_price": features["current_price"],
-                "reasons": reasons,
+                **cached,
             })
 
     logger.info(

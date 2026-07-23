@@ -21,6 +21,7 @@ export class AdminService {
     @InjectQueue('evaluate-recommendations') private evalQueue: Queue,
     @InjectQueue('collect-macro') private macroQueue: Queue,
     @InjectQueue('collect-investor-flow') private investorFlowQueue: Queue,
+    @InjectQueue('check-sell-signals') private sellSignalQueue: Queue,
     @InjectQueue('run-pipeline') private pipelineQueue: Queue,
     private readonly prisma: PrismaService,
   ) {}
@@ -87,6 +88,14 @@ export class AdminService {
     return { jobId: job.id, status: 'queued', message: `Investor flow collection queued for ${market}${days ? ` (days=${days})` : ''}` };
   }
 
+  async triggerCheckSellSignals(market = 'US') {
+    const job = await this.sellSignalQueue.add('check', { market }, {
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
+    return { jobId: job.id, status: 'queued', message: `SELL signal check queued for ${market}` };
+  }
+
   async triggerEvaluateRecommendations() {
     const job = await this.evalQueue.add('evaluate', {}, {
       attempts: 3,
@@ -105,6 +114,7 @@ export class AdminService {
       'evaluate-recommendations': this.evalQueue,
       'collect-macro': this.macroQueue,
       'collect-investor-flow': this.investorFlowQueue,
+      'check-sell-signals': this.sellSignalQueue,
       'run-pipeline': this.pipelineQueue,
     };
     const queue = queues[queueName];

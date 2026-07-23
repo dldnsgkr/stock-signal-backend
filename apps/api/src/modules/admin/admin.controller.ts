@@ -55,6 +55,12 @@ export class AdminController {
     return this.adminService.triggerCollectInvestorFlow(market, days ? Number(days) : undefined);
   }
 
+  @Post('jobs/check-sell-signals')
+  @ApiOperation({ summary: 'SELL 시그널 체크 실행' })
+  triggerCheckSellSignals(@Query('market') market = 'US') {
+    return this.adminService.triggerCheckSellSignals(market);
+  }
+
   @Post('jobs/evaluate-recommendations')
   @ApiOperation({ summary: '추천 성과 평가 실행' })
   triggerEvaluateRecommendations() {

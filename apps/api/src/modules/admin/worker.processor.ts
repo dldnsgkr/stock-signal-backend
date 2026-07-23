@@ -383,21 +383,40 @@ export class SellSignalProcessor {
     this.logger.log(`Checking ${openBuys.length} open BUY recs for ${market}`);
 
     const analysisUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
-    let responseData: any;
+
+    // 분석 서비스는 종목 단위로 feature 를 계산하므로(중복 캐시), 호출 1건이
+    // axios 10분 timeout 안에 끝나도록 유니크 종목 수 기준으로 나눠 보낸다.
+    // US 는 유니크 종목이 7천 개라 통짜 호출이 매일 timeout 으로 죽었다.
+    const byStock = new Map<number, typeof openBuys>();
+    for (const r of openBuys) {
+      const list = byStock.get(r.stockId);
+      if (list) list.push(r);
+      else byStock.set(r.stockId, [r]);
+    }
+    const stockIds = [...byStock.keys()];
+    const CHUNK_STOCKS = 1500;
+
+    const sellSignals: any[] = [];
     try {
-      responseData = await callAnalysis(`${analysisUrl}/analysis/generate-sell-signals`, {
-        market,
-        buy_recommendations: openBuys.map(r => ({
-          id: r.id,
-          stock_id: r.stockId,
-          buy_score: Number(r.score),
-        })),
-      });
+      for (let i = 0; i < stockIds.length; i += CHUNK_STOCKS) {
+        const chunkRecs = stockIds
+          .slice(i, i + CHUNK_STOCKS)
+          .flatMap(id => byStock.get(id)!);
+        const responseData: any = await callAnalysis(`${analysisUrl}/analysis/generate-sell-signals`, {
+          market,
+          buy_recommendations: chunkRecs.map(r => ({
+            id: r.id,
+            stock_id: r.stockId,
+            buy_score: Number(r.score),
+          })),
+        });
+        sellSignals.push(...(responseData?.sell_signals ?? []));
+        await safeProgress(job, Math.round(Math.min(100, ((i + CHUNK_STOCKS) / stockIds.length) * 100)));
+        this.logger.log(`SELL check chunk ${i / CHUNK_STOCKS + 1}/${Math.ceil(stockIds.length / CHUNK_STOCKS)} done (${market})`);
+      }
     } catch (err) {
       throwForRetryPolicy(err, `check-sell-signals/${market}`);
     }
-
-    const sellSignals: any[] = responseData?.sell_signals ?? [];
     if (sellSignals.length === 0) {
       this.logger.log(`No SELL signals generated for ${market}`);
       return { checked: openBuys.length, generated: 0 };
