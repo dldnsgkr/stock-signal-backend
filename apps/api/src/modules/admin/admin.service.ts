@@ -20,6 +20,7 @@ export class AdminService {
     @InjectQueue('generate-recommendations') private recsQueue: Queue,
     @InjectQueue('evaluate-recommendations') private evalQueue: Queue,
     @InjectQueue('collect-macro') private macroQueue: Queue,
+    @InjectQueue('collect-investor-flow') private investorFlowQueue: Queue,
     @InjectQueue('run-pipeline') private pipelineQueue: Queue,
     private readonly prisma: PrismaService,
   ) {}
@@ -78,6 +79,14 @@ export class AdminService {
     return { jobId: job.id, status: 'queued', message: `Macro collection queued for ${market}` };
   }
 
+  async triggerCollectInvestorFlow(market = 'KR', days?: number) {
+    const job = await this.investorFlowQueue.add('collect', { market, ...(days ? { days } : {}) }, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 10000 },
+    });
+    return { jobId: job.id, status: 'queued', message: `Investor flow collection queued for ${market}${days ? ` (days=${days})` : ''}` };
+  }
+
   async triggerEvaluateRecommendations() {
     const job = await this.evalQueue.add('evaluate', {}, {
       attempts: 3,
@@ -95,6 +104,7 @@ export class AdminService {
       'generate-recommendations': this.recsQueue,
       'evaluate-recommendations': this.evalQueue,
       'collect-macro': this.macroQueue,
+      'collect-investor-flow': this.investorFlowQueue,
       'run-pipeline': this.pipelineQueue,
     };
     const queue = queues[queueName];
@@ -225,6 +235,7 @@ export class AdminService {
       'collect-prices':            this.pricesQueue,
       'collect-news':              this.newsQueue,
       'collect-financials':        this.financialsQueue,
+      'collect-investor-flow':     this.investorFlowQueue,
     };
     for (const [name, q] of Object.entries(queues)) {
       try {

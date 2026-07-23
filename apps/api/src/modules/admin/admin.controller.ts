@@ -49,6 +49,12 @@ export class AdminController {
     return this.adminService.triggerGenerateRecommendations(market);
   }
 
+  @Post('jobs/collect-investor-flow')
+  @ApiOperation({ summary: '투자자 수급 수집 실행 (KR 전용, days로 백필)' })
+  triggerCollectInvestorFlow(@Query('market') market = 'KR', @Query('days') days?: string) {
+    return this.adminService.triggerCollectInvestorFlow(market, days ? Number(days) : undefined);
+  }
+
   @Post('jobs/evaluate-recommendations')
   @ApiOperation({ summary: '추천 성과 평가 실행' })
   triggerEvaluateRecommendations() {

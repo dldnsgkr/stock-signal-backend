@@ -8,6 +8,7 @@ import {
   RecommendationProcessor,
   EvaluationProcessor,
   MacroProcessor,
+  InvestorFlowProcessor,
   PipelineProcessor,
   SellSignalProcessor,
 } from '../admin/worker.processor';
@@ -27,6 +28,7 @@ import { SubscriptionModule } from '../subscriptions/subscription.module';
       { name: 'generate-recommendations' },
       { name: 'evaluate-recommendations' },
       { name: 'collect-macro' },
+      { name: 'collect-investor-flow' },
       { name: 'check-sell-signals' },
       {
         name: 'run-pipeline',
@@ -47,6 +49,7 @@ import { SubscriptionModule } from '../subscriptions/subscription.module';
     RecommendationProcessor,
     EvaluationProcessor,
     MacroProcessor,
+    InvestorFlowProcessor,
     PipelineProcessor,
     SellSignalProcessor,
     QueueMonitorService,

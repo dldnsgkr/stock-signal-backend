@@ -317,6 +317,36 @@ export class MacroProcessor {
   }
 }
 
+@Processor('collect-investor-flow')
+export class InvestorFlowProcessor {
+  private readonly logger = new Logger(InvestorFlowProcessor.name);
+
+  constructor(private readonly config: ConfigService) {}
+
+  @Process('collect')
+  async handleCollectInvestorFlow(job: Job<{ market: string; days?: number }>) {
+    const { market, days } = job.data;
+    if (market !== 'KR') {
+      this.logger.log(`Investor flow is KR-only, skipping ${market}`);
+      return { market, skipped: true };
+    }
+    this.logger.log(`Collecting investor flow for ${market}${days ? ` (days=${days})` : ''}...`);
+    try {
+      const analysisUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
+      // 백필(days 큼)은 KRX 호출이 일자당 4건이라 오래 걸린다 — 30분 여유
+      const data = await callAnalysis(
+        `${analysisUrl}/collect/investor-flow`,
+        { market, ...(days ? { days } : {}) },
+        1800000,
+      );
+      this.logger.log(`Investor flow collection done: ${JSON.stringify(data)}`);
+      return data;
+    } catch (err: unknown) {
+      throwForRetryPolicy(err, `collect-investor-flow/${market}`);
+    }
+  }
+}
+
 @Processor('check-sell-signals')
 export class SellSignalProcessor {
   private readonly logger = new Logger(SellSignalProcessor.name);
@@ -448,6 +478,7 @@ export class PipelineProcessor {
     @InjectQueue('collect-news') private newsQueue: Queue,
     @InjectQueue('collect-financials') private financialsQueue: Queue,
     @InjectQueue('collect-macro') private macroQueue: Queue,
+    @InjectQueue('collect-investor-flow') private investorFlowQueue: Queue,
     @InjectQueue('generate-recommendations') private recsQueue: Queue,
     @InjectQueue('check-sell-signals') private sellSignalQueue: Queue,
     private readonly prisma: PrismaService,
@@ -489,6 +520,10 @@ export class PipelineProcessor {
       this.financialsQueue.add('collect', { market }, { attempts: 4, backoff: { type: 'exponential', delay: 10000 } }),
       this.macroQueue.add('collect',      { market }, { attempts: 3, backoff: { type: 'exponential', delay: 5000  } }),
     ]);
+    // 수급(투자자 순매수)은 KR 전용 — KRX 데이터
+    const flowJob = market === 'KR'
+      ? await this.investorFlowQueue.add('collect', { market }, { attempts: 3, backoff: { type: 'exponential', delay: 10000 } })
+      : null;
 
     // job.finished() 대신 15초 폴링 사용:
     // - 15초마다 event loop가 깨어나 Bull lock 갱신 타이머가 정상 작동
@@ -508,10 +543,11 @@ export class PipelineProcessor {
         this.isDone(this.newsQueue, String(nJob.id)),
         this.isDone(this.financialsQueue, String(fJob.id)),
         this.isDone(this.macroQueue, String(mJob.id)),
+        flowJob ? this.isDone(this.investorFlowQueue, String(flowJob.id)) : Promise.resolve(true),
       ]);
       const pct = 15 + Math.min(64, Math.round((elapsed / MAX_WAIT_MS) * 64));
       await safeProgress(job, pct);
-      this.logger.log(`[Pipeline] Phase 2 status: prices=${done[0]} news=${done[1]} financials=${done[2]} macro=${done[3]}`);
+      this.logger.log(`[Pipeline] Phase 2 status: prices=${done[0]} news=${done[1]} financials=${done[2]} macro=${done[3]} flow=${done[4]}`);
       if (done.every(Boolean)) break;
     }
     await safeProgress(job, 80);
