@@ -55,6 +55,12 @@ export class AdminController {
     return this.adminService.triggerCollectInvestorFlow(market, days ? Number(days) : undefined);
   }
 
+  @Post('backtest/rescore')
+  @ApiOperation({ summary: '백테스트 재점수화 (analysis 서비스 프록시)' })
+  runBacktestRescore(@Body() body: Record<string, unknown>) {
+    return this.adminService.runBacktestRescore(body);
+  }
+
   @Post('jobs/check-sell-signals')
   @ApiOperation({ summary: 'SELL 시그널 체크 실행' })
   triggerCheckSellSignals(@Query('market') market = 'US') {

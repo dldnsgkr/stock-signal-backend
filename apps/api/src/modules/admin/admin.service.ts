@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
+import axios from 'axios';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -94,6 +95,20 @@ export class AdminService {
       backoff: { type: 'exponential', delay: 5000 },
     });
     return { jobId: job.id, status: 'queued', message: `SELL signal check queued for ${market}` };
+  }
+
+  // 백테스트는 FastAPI(analysis)에 있는데 외부 노출이 안 되므로 여기서 프록시한다.
+  async runBacktestRescore(body: Record<string, unknown>) {
+    const baseUrl = process.env.ANALYSIS_SERVICE_URL ?? 'http://localhost:8000';
+    try {
+      const res = await axios.post(`${baseUrl}/backtest/rescore`, body, {
+        timeout: 600000,
+        validateStatus: () => true,
+      });
+      return res.data;
+    } catch (err: any) {
+      return { error: err?.message ?? 'backtest failed' };
+    }
   }
 
   async triggerEvaluateRecommendations() {
