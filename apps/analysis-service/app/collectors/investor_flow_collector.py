@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 # mktId → stocks.symbol 접미사 (yfinance 표기)
 _MARKETS = {"STK": ".KS", "KSQ": ".KQ"}
-_INVESTORS = {"foreign": "9000", "institution": "7050"}
+# 개인(8000)도 수집 — 7-24 재검증 결과 |flow| 신호의 실제 출처가 개인이었을
+# 가능성이 높아(기관 7050 은 신호 없음) 국면별 재검증용 데이터를 쌓는다.
+_INVESTORS = {"foreign": "9000", "institution": "7050", "individual": "8000"}
 
 _KRX_CALL_GAP_SEC = 0.3  # KRX 부담 완화
 

@@ -8,6 +8,7 @@ import axios from 'axios';
 import { throwForRetryPolicy } from '../../common/job-errors';
 import { EmailService, SellSignalPayload } from '../alert/email.service';
 import { PushService } from '../alert/push.service';
+import { AlertService } from '../alert/alert.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 
 // FastAPI 호출 헬퍼 — 단일 시도, 재시도는 Bull backoff에 위임
@@ -524,7 +525,79 @@ export class PipelineProcessor {
     @InjectQueue('check-sell-signals') private sellSignalQueue: Queue,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly alert: AlertService,
   ) {}
+
+  // ── P2-11 데이터 계약 검증 ─────────────────────────────────────────────
+  // Phase 2(수집) 직후 · Phase 3(추천 생성) 직전에 검사한다.
+  // 오염·결측 데이터로 시그널을 만드는 것보다 파이프라인을 세우는 게 낫다.
+  private async validateDataContract(market: string): Promise<string[]> {
+    const problems: string[] = [];
+    const dayMs = 86400000;
+
+    // 1. 가격 신선도 — 최신 수집일이 4일(주말+휴일 감안) 넘게 오래되면 위반
+    type MaxDateRow = { d: Date | null };
+    const [priceMax] = await this.prisma.$queryRaw<MaxDateRow[]>`
+      SELECT MAX(p.date) AS d FROM price_daily p
+      JOIN stocks s ON s.id = p.stock_id
+      JOIN markets m ON m.id = s.market_id
+      WHERE m.code = ${market}
+    `;
+    if (!priceMax?.d) {
+      problems.push('가격 데이터 없음');
+    } else {
+      const ageDays = (Date.now() - priceMax.d.getTime()) / dayMs;
+      if (ageDays > 4) problems.push(`가격 최신일 ${priceMax.d.toISOString().slice(0, 10)} (${Math.floor(ageDays)}일 경과)`);
+
+      // 2. 커버리지 — 최신일에 가격이 있는 종목이 활성 종목의 절반 미만이면 위반
+      type CountRow = { n: bigint };
+      const [cov] = await this.prisma.$queryRaw<CountRow[]>`
+        SELECT COUNT(DISTINCT p.stock_id) AS n FROM price_daily p
+        JOIN stocks s ON s.id = p.stock_id
+        JOIN markets m ON m.id = s.market_id
+        WHERE m.code = ${market} AND p.date = ${priceMax.d}
+      `;
+      const active = await this.prisma.stock.count({ where: { market: { code: market }, isActive: true } });
+      const covered = Number(cov?.n ?? 0);
+      if (active > 0 && covered < Math.max(100, active * 0.5)) {
+        problems.push(`가격 커버리지 부족 — 최신일 ${covered}/${active}종목`);
+      }
+
+      // 3. 이상 가격 — 최신일에 0 이하 종가가 있으면 위반
+      const [bad] = await this.prisma.$queryRaw<CountRow[]>`
+        SELECT COUNT(*) AS n FROM price_daily p
+        JOIN stocks s ON s.id = p.stock_id
+        JOIN markets m ON m.id = s.market_id
+        WHERE m.code = ${market} AND p.date = ${priceMax.d} AND p.close <= 0
+      `;
+      if (Number(bad?.n ?? 0) > 0) problems.push(`0 이하 종가 ${Number(bad!.n)}건`);
+    }
+
+    // 4. 벤치마크 지수 — 없으면 평가 시 알파가 전부 비어버린다
+    const benchmark = market === 'KR' ? 'KOSPI' : 'SP500';
+    const bench = await this.prisma.macroIndicator.findFirst({
+      where: { marketCode: market, indicatorType: benchmark },
+      orderBy: { observedAt: 'desc' },
+      select: { observedAt: true },
+    });
+    if (!bench) problems.push(`벤치마크(${benchmark}) 지수 없음`);
+    else if (Date.now() - bench.observedAt.getTime() > 5 * dayMs) {
+      problems.push(`벤치마크(${benchmark}) ${Math.floor((Date.now() - bench.observedAt.getTime()) / dayMs)}일 미갱신`);
+    }
+
+    // 5. KR 수급 신선도
+    if (market === 'KR') {
+      const flow = await this.prisma.investorFlowDaily.findFirst({
+        orderBy: { tradeDate: 'desc' },
+        select: { tradeDate: true },
+      });
+      if (flow && Date.now() - flow.tradeDate.getTime() > 5 * dayMs) {
+        problems.push(`수급 데이터 ${Math.floor((Date.now() - flow.tradeDate.getTime()) / dayMs)}일 미갱신`);
+      }
+    }
+
+    return problems;
+  }
 
   private async isDone(queue: Queue, jobId: string): Promise<boolean> {
     try {
@@ -592,6 +665,20 @@ export class PipelineProcessor {
       if (done.every(Boolean)) break;
     }
     await safeProgress(job, 80);
+
+    // Phase 2.5: 데이터 계약 검증 — 위반 시 시그널 생성 전에 중단
+    try { await job.update({ market, currentStep: 'data-contract' }); } catch {}
+    const violations = await this.validateDataContract(market);
+    if (violations.length > 0) {
+      await this.alert.send({
+        type: 'error',
+        title: '데이터 계약 위반 — 파이프라인 중단',
+        market,
+        detail: violations.join(' · '),
+      });
+      throw new Error(`[데이터 계약 위반] ${violations.join(' · ')}`);
+    }
+    this.logger.log(`[Pipeline] Data contract OK for ${market}`);
 
     // Phase 3: 추천 시그널 생성
     try { await job.update({ market, currentStep: 'recommendations' }); } catch {}

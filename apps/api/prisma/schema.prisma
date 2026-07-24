@@ -76,7 +76,7 @@ model InvestorFlowDaily {
   id           Int      @id @default(autoincrement())
   stockId      Int      @map("stock_id")
   tradeDate    DateTime @map("trade_date") @db.Date
-  investorType String   @map("investor_type") @db.VarChar(20) // 'foreign' | 'institution'
+  investorType String   @map("investor_type") @db.VarChar(20) // 'foreign' | 'institution' | 'individual'
   netBuyValue  BigInt   @map("net_buy_value")   // 순매수 거래대금 (KRW)
   netBuyVolume BigInt?  @map("net_buy_volume")  // 순매수 거래량 (주)
   createdAt    DateTime @default(now()) @map("created_at")
