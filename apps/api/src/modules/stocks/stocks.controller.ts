@@ -70,6 +70,13 @@ export class StocksController {
     return this.stocksService.getScoreHistory(symbol, +days);
   }
 
+  @Get(':symbol/investor-flow')
+  @ApiOperation({ summary: '종목 투자자 수급 이력 (KR 전용, investor_flow_daily)' })
+  @ApiQuery({ name: 'days', required: false, type: Number })
+  getInvestorFlow(@Param('symbol') symbol: string, @Query('days') days = 90) {
+    return this.stocksService.getInvestorFlow(symbol, +days);
+  }
+
   @Get(':symbol/technical-levels')
   @ApiOperation({ summary: '지지선·저항선 + 이동평균 + 가격 전망' })
   @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })

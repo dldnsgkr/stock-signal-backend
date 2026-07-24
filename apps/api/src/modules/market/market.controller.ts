@@ -20,6 +20,26 @@ export class MarketController {
     return this.marketService.getForeignTopStocks(market, date, limit ? Number(limit) : 30);
   }
 
+  @Get('flow-ranking')
+  @ApiOperation({ summary: '기간 누적 투자자 수급 랭킹 (KR, investor_flow_daily 집계)' })
+  @ApiQuery({ name: 'market', required: false, enum: ['ALL', 'KOSPI', 'KOSDAQ'] })
+  @ApiQuery({ name: 'investor', required: false, enum: ['foreign', 'institution'] })
+  @ApiQuery({ name: 'days', required: false, description: '최근 N거래일 (기본 20)' })
+  @ApiQuery({ name: 'limit', required: false, description: '상위·하위 종목 수 (기본 20)' })
+  getFlowRanking(
+    @Query('market') market = 'ALL',
+    @Query('investor') investor = 'foreign',
+    @Query('days') days?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.marketService.getFlowRanking(
+      market,
+      investor === 'institution' ? 'institution' : 'foreign',
+      days ? Math.min(Number(days), 120) : 20,
+      limit ? Math.min(Number(limit), 50) : 20,
+    );
+  }
+
   @Get('investor-trading')
   @ApiOperation({ summary: '투자자별 매매동향 (KRX pykrx)' })
   @ApiQuery({ name: 'market', required: false, enum: ['KOSPI', 'KOSDAQ'] })

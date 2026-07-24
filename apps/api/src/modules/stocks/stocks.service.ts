@@ -113,6 +113,31 @@ export class StocksService {
     }));
   }
 
+  // KR 전용 — investor_flow_daily 는 KRX 데이터만 적재된다.
+  async getInvestorFlow(symbol: string, days = 90) {
+    const stock = await this.findBySymbol(symbol);
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    const rows = await this.prisma.investorFlowDaily.findMany({
+      where: { stockId: stock.id, tradeDate: { gte: since } },
+      select: { tradeDate: true, investorType: true, netBuyValue: true },
+      orderBy: { tradeDate: 'asc' },
+    });
+
+    // (date, investorType) 행을 날짜별 한 행으로 피벗
+    const byDate = new Map<string, { date: string; foreign: number | null; institution: number | null }>();
+    for (const r of rows) {
+      const d = r.tradeDate.toISOString().slice(0, 10);
+      const entry = byDate.get(d) ?? { date: d, foreign: null, institution: null };
+      if (r.investorType === 'foreign') entry.foreign = Number(r.netBuyValue);
+      if (r.investorType === 'institution') entry.institution = Number(r.netBuyValue);
+      byDate.set(d, entry);
+    }
+
+    return { symbol: stock.symbol, market: stock.market.code, flows: [...byDate.values()] };
+  }
+
   async getTechnicalLevels(symbol: string, market: string) {
     const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
     try {
