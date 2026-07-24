@@ -19,6 +19,28 @@ type PriceChangeRow = {
   prev_close: string | null;
 };
 
+type FlowDailyRow = {
+  stock_id: number;
+  trade_date: Date;
+  net_buy_value: bigint;
+};
+
+type TradedValueRow = {
+  stock_id: number;
+  traded_value: number;
+};
+
+// 최근일부터 거슬러 올라가며 부호가 sign 과 같은 연속 일수
+function streakOf(daily: number[] | undefined, sign: 1 | -1): number {
+  if (!daily?.length) return 0;
+  let n = 0;
+  for (let i = daily.length - 1; i >= 0; i--) {
+    if (Math.sign(daily[i]) === sign) n++;
+    else break;
+  }
+  return n;
+}
+
 @Injectable()
 export class MarketService {
   private readonly logger = new Logger(MarketService.name);
@@ -97,6 +119,42 @@ export class MarketService {
     const bottom = rankRows.slice(-limit).reverse(); // 순매도 큰 순
     const ids = [...new Set([...top, ...bottom].map((r: FlowRankRow) => r.stock_id))];
 
+    // 선정 종목들의 일별 순매수 시계열 — 스파크라인·연속일수 계산용
+    const dailyRows = await this.prisma.$queryRaw<FlowDailyRow[]>`
+      WITH recent_dates AS (
+        SELECT DISTINCT trade_date FROM investor_flow_daily
+        ORDER BY trade_date DESC LIMIT ${days}
+      )
+      SELECT f.stock_id, f.trade_date, f.net_buy_value
+      FROM investor_flow_daily f
+      JOIN recent_dates d ON d.trade_date = f.trade_date
+      WHERE f.investor_type = ${investor}
+        AND f.stock_id = ANY(${ids})
+      ORDER BY f.trade_date ASC
+    `;
+    const dailyMap = new Map<number, number[]>();
+    for (const r of dailyRows) {
+      const list = dailyMap.get(r.stock_id) ?? [];
+      list.push(Number(r.net_buy_value));
+      dailyMap.set(r.stock_id, list);
+    }
+
+    // 같은 구간 거래대금 합 (volume × close 근사) — 순매수 강도 계산용
+    const tradedRows = await this.prisma.$queryRaw<TradedValueRow[]>`
+      WITH recent_dates AS (
+        SELECT DISTINCT trade_date FROM investor_flow_daily
+        ORDER BY trade_date DESC LIMIT ${days}
+      )
+      SELECT p.stock_id, SUM(p.volume * p.close)::float8 AS traded_value
+      FROM price_daily p
+      JOIN recent_dates d ON d.trade_date = p.date
+      WHERE p.stock_id = ANY(${ids})
+      GROUP BY p.stock_id
+    `;
+    const tradedMap = new Map(
+      tradedRows.map((t: TradedValueRow) => [t.stock_id, Number(t.traded_value)]),
+    );
+
     // 최신 종가·전일 대비 등락률
     const priceRows = await this.prisma.$queryRaw<PriceChangeRow[]>`
       SELECT stock_id, close, prev_close FROM (
@@ -120,14 +178,25 @@ export class MarketService {
       ]),
     );
 
-    const serialize = (r: FlowRankRow) => ({
-      symbol: r.symbol,
-      name: r.name,
-      sector: r.sector,
-      totalNet: Number(r.total_net),
-      activeDays: Number(r.active_days),
-      ...(priceMap.get(r.stock_id) ?? { currentPrice: null, changeRate: null }),
-    });
+    const serialize = (r: FlowRankRow) => {
+      const totalNet = Number(r.total_net);
+      const daily = dailyMap.get(r.stock_id);
+      const traded = tradedMap.get(r.stock_id);
+      return {
+        symbol: r.symbol,
+        name: r.name,
+        sector: r.sector,
+        totalNet,
+        activeDays: Number(r.active_days),
+        // 누적 방향과 같은 부호로 며칠 연속인지 (순매수 상위면 연속 순매수 일수)
+        streak: streakOf(daily, totalNet >= 0 ? 1 : -1),
+        // 일별 순매수 시계열 (스파크라인용, 과거→최근)
+        daily: daily ?? [],
+        // 구간 거래대금 대비 순매수 비중 (거래대금 = volume×close 근사)
+        intensity: traded && traded > 0 ? totalNet / traded : null,
+        ...(priceMap.get(r.stock_id) ?? { currentPrice: null, changeRate: null }),
+      };
+    };
 
     return {
       market,
