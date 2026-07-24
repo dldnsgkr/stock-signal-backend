@@ -320,7 +320,9 @@ export class PerformanceService {
         WHERE rr.market_code = ${market}
           AND rr.executed_at >= ${since}
           AND r.action = 'BUY'
-          AND res.return_7d IS NOT NULL
+          -- 어느 한 기간이라도 평가된 추천만. return_7d 만 보면 horizon=30d 에서
+          -- 7일 결측·30일 존재인 희귀 케이스가 누락된다.
+          AND (res.return_7d IS NOT NULL OR res.return_30d IS NOT NULL)
       )
       SELECT * FROM ranked
       ORDER BY run_executed_at DESC, score_rank ASC
