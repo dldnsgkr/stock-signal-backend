@@ -45,12 +45,19 @@ export class SchedulerService {
       const health = await this.adminService.getDataHealth();
       const { summary, markets, news } = health;
 
-      // 위험 항목 로그
+      // 위험 항목 — 로그 + 알림 발송 (alert.send 는 푸시/Slack 으로 전파)
+      // 과거에 danger 가 로그에만 남아 두 달간 아무도 몰랐던 사고의 재발 방지.
       for (const m of markets) {
         if (m.signal.status === 'danger') {
           this.logger.error(
             `[헬스체크] ${m.market} 시그널 ${m.signal.ageHours}시간 미업데이트 — 파이프라인 확인 필요`,
           );
+          await this.alert.send({
+            type: 'error',
+            title: '시그널 미갱신',
+            market: m.market,
+            detail: `${m.signal.ageHours}시간 미업데이트 — 파이프라인 확인 필요`,
+          });
         } else if (m.signal.status === 'warn') {
           this.logger.warn(
             `[헬스체크] ${m.market} 시그널 ${m.signal.ageHours}시간 미업데이트`,
@@ -61,6 +68,12 @@ export class SchedulerService {
           this.logger.error(
             `[헬스체크] ${m.market} 가격 데이터 ${m.price.ageDays}일 미수집`,
           );
+          await this.alert.send({
+            type: 'error',
+            title: '가격 데이터 미수집',
+            market: m.market,
+            detail: `${m.price.ageDays}일째 수집 안 됨`,
+          });
         } else if (m.price.status === 'warn') {
           this.logger.warn(
             `[헬스체크] ${m.market} 가격 데이터 ${m.price.ageDays}일 미수집`,

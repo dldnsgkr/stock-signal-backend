@@ -7,6 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import axios from 'axios';
 import { throwForRetryPolicy } from '../../common/job-errors';
 import { EmailService, SellSignalPayload } from '../alert/email.service';
+import { PushService } from '../alert/push.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 
 // FastAPI 호출 헬퍼 — 단일 시도, 재시도는 Bull backoff에 위임
@@ -168,6 +169,7 @@ export class RecommendationProcessor {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly email: EmailService,
+    private readonly push: PushService,
     private readonly subscriptions: SubscriptionService,
   ) {}
 
@@ -253,6 +255,17 @@ export class RecommendationProcessor {
       this.sendAlertEmails(market, buyRecs).catch(e =>
         this.logger.error(`Alert email dispatch error: ${e}`),
       );
+
+      // 브라우저 푸시 — 데일리 시그널 요약 (비동기, job 실패에 영향 없음)
+      if (buyRecs.length > 0) {
+        const top = buyRecs[0];
+        this.push.sendToAll({
+          title: `📈 ${market} 매수 시그널 ${buyRecs.length}건`,
+          body: `최고 점수: ${top.symbol} ${Number(top.score).toFixed(1)}점 (신뢰도 ${top.confidence}%)`,
+          url: `/recommendations?market=${market}&action=BUY`,
+          tag: `buy-signals-${market}`,
+        }).catch(e => this.logger.error(`BUY push failed: ${e}`));
+      }
 
       return { runId: run.id, count: recommendations.length };
     } catch (err: unknown) {
@@ -355,6 +368,7 @@ export class SellSignalProcessor {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly email: EmailService,
+    private readonly push: PushService,
     private readonly subscriptions: SubscriptionService,
   ) {}
 
@@ -442,6 +456,14 @@ export class SellSignalProcessor {
     this.sendSellAlertEmails(market, sellSignals, entryPriceMap).catch(e =>
       this.logger.error(`SELL alert email dispatch error: ${e}`),
     );
+
+    // 브라우저 푸시 — SELL 요약
+    this.push.sendToAll({
+      title: `📉 ${market} 청산 시그널 ${sellSignals.length}건`,
+      body: `미결제 BUY ${openBuys.length}건 중 ${sellSignals.length}건 청산 판정`,
+      url: `/recommendations?market=${market}&action=SELL`,
+      tag: `sell-signals-${market}`,
+    }).catch(e => this.logger.error(`SELL push failed: ${e}`));
 
     return { checked: openBuys.length, generated: sellSignals.length };
   }

@@ -60,6 +60,17 @@ model PriceDaily {
   @@map("price_daily")
 }
 
+// 브라우저 Web Push 구독 (디바이스 단위). 시그널 요약·운영 경고 발송용.
+model PushSubscription {
+  id        Int      @id @default(autoincrement())
+  endpoint  String   @unique @db.Text
+  p256dh    String   @db.VarChar(255)
+  auth      String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("push_subscriptions")
+}
+
 // KR 종목별 투자자 순매수 일별 (KRX MDCSTAT02401). 적재 전용 — 점수 미반영.
 model InvestorFlowDaily {
   id           Int      @id @default(autoincrement())
