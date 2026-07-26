@@ -23,6 +23,12 @@ export interface SellSignalPayload {
   reasons: string[];
 }
 
+function fmtPrice(value: number, market: string): string {
+  return market === 'KR'
+    ? `₩${Math.round(value).toLocaleString('ko-KR')}`
+    : `$${value.toFixed(2)}`;
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -77,7 +83,7 @@ export class EmailService {
         </div>
         <div>
           <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">진입가</div>
-          <div style="font-size:22px;font-weight:600;color:#0f172a">$${payload.entryPrice.toFixed(2)}</div>
+          <div style="font-size:22px;font-weight:600;color:#0f172a">${fmtPrice(payload.entryPrice, payload.market)}</div>
         </div>
       </div>
     </div>
@@ -139,12 +145,12 @@ export class EmailService {
         </div>
         <div>
           <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">진입가</div>
-          <div style="font-size:22px;font-weight:600;color:#0f172a">$${payload.entryPrice.toFixed(2)}</div>
+          <div style="font-size:22px;font-weight:600;color:#0f172a">${fmtPrice(payload.entryPrice, payload.market)}</div>
         </div>
         ${payload.exitPrice != null ? `
         <div>
           <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">현재가</div>
-          <div style="font-size:22px;font-weight:600;color:#0f172a">$${payload.exitPrice.toFixed(2)}</div>
+          <div style="font-size:22px;font-weight:600;color:#0f172a">${fmtPrice(payload.exitPrice, payload.market)}</div>
           ${priceChange != null ? `<div style="font-size:13px;font-weight:600;color:${priceChangeColor}">${Number(priceChange) >= 0 ? '+' : ''}${priceChange}%</div>` : ''}
         </div>` : ''}
       </div>

@@ -36,6 +36,7 @@ model Stock {
   alertSubscriptions  AlertSubscription[]
   sellSignals         SellSignal[]
   investorFlows       InvestorFlowDaily[]
+  watchlistItems      WatchlistItem[]
 
   @@unique([marketId, symbol], map: "stocks_market_id_symbol_key")
   @@index([symbol])
@@ -240,7 +241,23 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  watchlistItems WatchlistItem[]
+
   @@map("users")
+}
+
+// 유저별 관심종목 (Auth 2단계)
+model WatchlistItem {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  stockId   Int      @map("stock_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stockId])
+  @@map("watchlist_items")
 }
 
 model RecommendationResult {

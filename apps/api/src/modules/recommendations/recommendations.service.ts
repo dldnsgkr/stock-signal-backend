@@ -60,7 +60,7 @@ export class RecommendationsService {
       this.prisma.recommendation.findMany({
         where,
         include: {
-          stock: true,
+          stock: { include: { market: true } },
           run: { include: { modelVersion: true } },
           result: true,
         },
