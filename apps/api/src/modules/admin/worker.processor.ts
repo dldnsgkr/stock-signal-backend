@@ -17,6 +17,49 @@ async function callAnalysis(url: string, data: object, timeoutMs = 600000): Prom
   return res.data;
 }
 
+// 관심종목 타겟 푸시: signals 에 든 종목을 watchlist 에 담은 유저에게 개별 알림.
+// 유저당 1건으로 묶어 스팸 방지. push 미설정/미구독이면 sendToUsers 가 자동 no-op.
+async function dispatchWatchlistPush(
+  prisma: PrismaService,
+  push: PushService,
+  logger: Logger,
+  signals: { stockId: number; symbol: string }[],
+  action: 'BUY' | 'SELL',
+  market: string,
+): Promise<void> {
+  const stockIds = [...new Set(signals.map(s => s.stockId))];
+  if (stockIds.length === 0) return;
+  const symbolOf = new Map(signals.map(s => [s.stockId, s.symbol]));
+
+  const watchers = await prisma.watchlistItem.findMany({
+    where: { stockId: { in: stockIds } },
+    select: { userId: true, stockId: true },
+  });
+  if (watchers.length === 0) return;
+
+  const byUser = new Map<number, string[]>();
+  for (const w of watchers) {
+    const list = byUser.get(w.userId) ?? [];
+    const sym = symbolOf.get(w.stockId);
+    if (sym && !list.includes(sym)) list.push(sym);
+    byUser.set(w.userId, list);
+  }
+
+  const label = action === 'BUY' ? '매수' : '청산';
+  const emoji = action === 'BUY' ? '📈' : '📉';
+  for (const [userId, symbols] of byUser) {
+    const head = symbols.slice(0, 3).join(', ');
+    const more = symbols.length > 3 ? ` 외 ${symbols.length - 3}` : '';
+    await push.sendToUsers([userId], {
+      title: `${emoji} 관심종목 ${label} 시그널`,
+      body: `${head}${more}에 ${label} 시그널이 발생했습니다`,
+      url: `/watchlist`,
+      tag: `watchlist-${action}-${market}`,
+    });
+  }
+  logger.log(`Watchlist ${action} push: ${byUser.size} user(s) for ${market}`);
+}
+
 const PRICE_BATCH = 300;
 const NEWS_BATCH = 30;       // 뉴스는 종목당 yfinance HTTP 1건 → 배치 작게
 const FINANCIAL_BATCH = 200;
@@ -266,6 +309,10 @@ export class RecommendationProcessor {
           url: `/recommendations?market=${market}&action=BUY`,
           tag: `buy-signals-${market}`,
         }).catch(e => this.logger.error(`BUY push failed: ${e}`));
+
+        // 관심종목 타겟 푸시 — 내가 담은 종목에 BUY 가 뜨면 개별 알림
+        dispatchWatchlistPush(this.prisma, this.push, this.logger, buyRecs, 'BUY', market)
+          .catch(e => this.logger.error(`Watchlist BUY push failed: ${e}`));
       }
 
       return { runId: run.id, count: recommendations.length };
@@ -465,6 +512,17 @@ export class SellSignalProcessor {
       url: `/recommendations?market=${market}&action=SELL`,
       tag: `sell-signals-${market}`,
     }).catch(e => this.logger.error(`SELL push failed: ${e}`));
+
+    // 관심종목 타겟 푸시 — 심볼 조회 후 전달
+    (async () => {
+      const sellStockIds = [...new Set(sellSignals.map((s: any) => s.stock_id))];
+      const stocks = await this.prisma.stock.findMany({
+        where: { id: { in: sellStockIds } },
+        select: { id: true, symbol: true },
+      });
+      const signals = stocks.map(st => ({ stockId: st.id, symbol: st.symbol }));
+      await dispatchWatchlistPush(this.prisma, this.push, this.logger, signals, 'SELL', market);
+    })().catch(e => this.logger.error(`Watchlist SELL push failed: ${e}`));
 
     return { checked: openBuys.length, generated: sellSignals.length };
   }

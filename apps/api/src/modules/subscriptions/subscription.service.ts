@@ -5,7 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class SubscriptionService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async subscribe(email: string, symbol: string) {
+  async subscribe(email: string, symbol: string, userId?: number) {
     const stock = await this.prisma.stock.findFirst({
       where: { symbol: symbol.toUpperCase(), isActive: true },
     });
@@ -22,11 +22,11 @@ export class SubscriptionService {
     if (existing) {
       await this.prisma.alertSubscription.update({
         where: { id: existing.id },
-        data: { isActive: true },
+        data: { isActive: true, ...(userId ? { userId } : {}) },
       });
     } else {
       await this.prisma.alertSubscription.create({
-        data: { email, stockId: stock.id },
+        data: { email, stockId: stock.id, userId: userId ?? null },
       });
     }
 

@@ -35,11 +35,11 @@ export class PushService {
     return this.enabled ? (this.config.get<string>('VAPID_PUBLIC_KEY') ?? null) : null;
   }
 
-  async subscribe(endpoint: string, p256dh: string, auth: string) {
+  async subscribe(endpoint: string, p256dh: string, auth: string, userId?: number) {
     await this.prisma.pushSubscription.upsert({
       where: { endpoint },
-      create: { endpoint, p256dh, auth },
-      update: { p256dh, auth },
+      create: { endpoint, p256dh, auth, userId: userId ?? null },
+      update: { p256dh, auth, ...(userId ? { userId } : {}) },
     });
     return { subscribed: true };
   }
@@ -49,11 +49,26 @@ export class PushService {
     return { subscribed: false };
   }
 
+  /** 특정 유저들의 디바이스에만 발송 (관심종목 타겟 알림). throw 하지 않음. */
+  async sendToUsers(userIds: number[], payload: PushPayload): Promise<{ sent: number; removed: number }> {
+    if (!this.enabled || userIds.length === 0) return { sent: 0, removed: 0 };
+    const subs = await this.prisma.pushSubscription.findMany({
+      where: { userId: { in: userIds } },
+    });
+    return this.dispatch(subs, payload);
+  }
+
   /** 모든 구독 브라우저에 발송. 실패해도 throw 하지 않는다(호출부 job 에 영향 금지). */
   async sendToAll(payload: PushPayload): Promise<{ sent: number; removed: number }> {
     if (!this.enabled) return { sent: 0, removed: 0 };
-
     const subs = await this.prisma.pushSubscription.findMany();
+    return this.dispatch(subs, payload);
+  }
+
+  private async dispatch(
+    subs: { id: number; endpoint: string; p256dh: string; auth: string }[],
+    payload: PushPayload,
+  ): Promise<{ sent: number; removed: number }> {
     if (subs.length === 0) return { sent: 0, removed: 0 };
 
     const body = JSON.stringify(payload);

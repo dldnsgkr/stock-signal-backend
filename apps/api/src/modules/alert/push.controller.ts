@@ -5,6 +5,7 @@ import { PushService } from './push.service';
 interface SubscribeBody {
   endpoint: string;
   keys: { p256dh: string; auth: string };
+  userId?: number; // 로그인 유저면 프론트 authed 라우트가 세션에서 주입
 }
 
 @ApiTags('push')
@@ -24,7 +25,7 @@ export class PushController {
     if (!body?.endpoint || !body?.keys?.p256dh || !body?.keys?.auth) {
       throw new BadRequestException('endpoint, keys.p256dh, keys.auth required');
     }
-    return this.push.subscribe(body.endpoint, body.keys.p256dh, body.keys.auth);
+    return this.push.subscribe(body.endpoint, body.keys.p256dh, body.keys.auth, body.userId);
   }
 
   @Post('unsubscribe')

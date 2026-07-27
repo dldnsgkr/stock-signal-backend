@@ -62,13 +62,18 @@ model PriceDaily {
 }
 
 // 브라우저 Web Push 구독 (디바이스 단위). 시그널 요약·운영 경고 발송용.
+// userId 가 있으면 로그인 유저의 디바이스 — 관심종목 타겟 알림에 사용.
 model PushSubscription {
   id        Int      @id @default(autoincrement())
   endpoint  String   @unique @db.Text
   p256dh    String   @db.VarChar(255)
   auth      String   @db.VarChar(255)
+  userId    Int?     @map("user_id")
   createdAt DateTime @default(now()) @map("created_at")
 
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
   @@map("push_subscriptions")
 }
 
@@ -222,13 +227,16 @@ model AlertSubscription {
   id        Int      @id @default(autoincrement())
   email     String   @db.VarChar(200)
   stockId   Int      @map("stock_id")
+  userId    Int?     @map("user_id")
   isActive  Boolean  @default(true) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")
 
   stock Stock @relation(fields: [stockId], references: [id])
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@unique([email, stockId])
   @@index([stockId])
+  @@index([userId])
   @@map("alert_subscriptions")
 }
 
@@ -241,7 +249,9 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  watchlistItems WatchlistItem[]
+  watchlistItems     WatchlistItem[]
+  pushSubscriptions  PushSubscription[]
+  alertSubscriptions AlertSubscription[]
 
   @@map("users")
 }

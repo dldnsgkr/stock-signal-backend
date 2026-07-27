@@ -9,8 +9,8 @@ export class SubscriptionController {
 
   @Post()
   @ApiOperation({ summary: '종목 BUY 시그널 알림 구독' })
-  subscribe(@Body() body: { email: string; symbol: string }) {
-    return this.service.subscribe(body.email, body.symbol);
+  subscribe(@Body() body: { email: string; symbol: string; userId?: number }) {
+    return this.service.subscribe(body.email, body.symbol, body.userId);
   }
 
   @Delete()
