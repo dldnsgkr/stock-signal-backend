@@ -252,8 +252,25 @@ model User {
   watchlistItems     WatchlistItem[]
   pushSubscriptions  PushSubscription[]
   alertSubscriptions AlertSubscription[]
+  settings           UserSettings?
 
   @@map("users")
+}
+
+// 유저 개인 설정 (Auth 4단계). 없으면 코드 기본값 사용.
+model UserSettings {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @unique @map("user_id")
+  defaultMarket String   @default("US") @map("default_market") @db.VarChar(4) // 'US' | 'KR'
+  alertOnBuy    Boolean  @default(true) @map("alert_on_buy")
+  alertOnSell   Boolean  @default(true) @map("alert_on_sell")
+  minAlertScore Int?     @map("min_alert_score")   // BUY 알림 최소 점수 (null=제한 없음)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
 }
 
 // 유저별 관심종목 (Auth 2단계)

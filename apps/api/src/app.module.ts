@@ -14,6 +14,7 @@ import { SubscriptionModule } from './modules/subscriptions/subscription.module'
 import { MarketModule } from './modules/market/market.module';
 import { UsersModule } from './modules/users/users.module';
 import { WatchlistModule } from './modules/watchlist/watchlist.module';
+import { UserSettingsModule } from './modules/user-settings/user-settings.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { WatchlistModule } from './modules/watchlist/watchlist.module';
     MarketModule,
     UsersModule,
     WatchlistModule,
+    UserSettingsModule,
   ],
 })
 export class AppModule {}

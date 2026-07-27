@@ -18,18 +18,19 @@ async function callAnalysis(url: string, data: object, timeoutMs = 600000): Prom
 }
 
 // 관심종목 타겟 푸시: signals 에 든 종목을 watchlist 에 담은 유저에게 개별 알림.
-// 유저당 1건으로 묶어 스팸 방지. push 미설정/미구독이면 sendToUsers 가 자동 no-op.
+// 유저 개인 설정(BUY/SELL 토글, 최소 점수) 반영. 유저당 1건으로 묶어 스팸 방지.
+// push 미설정/미구독이면 sendToUsers 가 자동 no-op.
 async function dispatchWatchlistPush(
   prisma: PrismaService,
   push: PushService,
   logger: Logger,
-  signals: { stockId: number; symbol: string }[],
+  signals: { stockId: number; symbol: string; score?: number }[],
   action: 'BUY' | 'SELL',
   market: string,
 ): Promise<void> {
   const stockIds = [...new Set(signals.map(s => s.stockId))];
   if (stockIds.length === 0) return;
-  const symbolOf = new Map(signals.map(s => [s.stockId, s.symbol]));
+  const infoOf = new Map(signals.map(s => [s.stockId, { symbol: s.symbol, score: s.score }]));
 
   const watchers = await prisma.watchlistItem.findMany({
     where: { stockId: { in: stockIds } },
@@ -37,17 +38,37 @@ async function dispatchWatchlistPush(
   });
   if (watchers.length === 0) return;
 
+  // 대상 유저들의 개인 설정 일괄 조회 (없으면 기본값: 둘 다 on, 점수 제한 없음)
+  const watcherIds = [...new Set(watchers.map(w => w.userId))];
+  const settingsRows = await prisma.userSettings.findMany({ where: { userId: { in: watcherIds } } });
+  const settingsOf = new Map(settingsRows.map(s => [s.userId, s]));
+
+  // userId -> 알림 대상 심볼 목록 (설정 필터 적용)
   const byUser = new Map<number, string[]>();
   for (const w of watchers) {
+    const st = settingsOf.get(w.userId);
+    const alertOnBuy = st?.alertOnBuy ?? true;
+    const alertOnSell = st?.alertOnSell ?? true;
+    const minScore = st?.minAlertScore ?? null;
+
+    if (action === 'BUY' && !alertOnBuy) continue;
+    if (action === 'SELL' && !alertOnSell) continue;
+
+    const info = infoOf.get(w.stockId);
+    if (!info) continue;
+    // BUY 는 최소 점수 필터. SELL 은 토글만.
+    if (action === 'BUY' && minScore != null && (info.score ?? 0) < minScore) continue;
+
     const list = byUser.get(w.userId) ?? [];
-    const sym = symbolOf.get(w.stockId);
-    if (sym && !list.includes(sym)) list.push(sym);
+    if (!list.includes(info.symbol)) list.push(info.symbol);
     byUser.set(w.userId, list);
   }
 
   const label = action === 'BUY' ? '매수' : '청산';
   const emoji = action === 'BUY' ? '📈' : '📉';
+  let sentUsers = 0;
   for (const [userId, symbols] of byUser) {
+    if (symbols.length === 0) continue;
     const head = symbols.slice(0, 3).join(', ');
     const more = symbols.length > 3 ? ` 외 ${symbols.length - 3}` : '';
     await push.sendToUsers([userId], {
@@ -56,8 +77,9 @@ async function dispatchWatchlistPush(
       url: `/watchlist`,
       tag: `watchlist-${action}-${market}`,
     });
+    sentUsers++;
   }
-  logger.log(`Watchlist ${action} push: ${byUser.size} user(s) for ${market}`);
+  logger.log(`Watchlist ${action} push: ${sentUsers} user(s) for ${market}`);
 }
 
 const PRICE_BATCH = 300;
@@ -513,7 +535,7 @@ export class SellSignalProcessor {
       tag: `sell-signals-${market}`,
     }).catch(e => this.logger.error(`SELL push failed: ${e}`));
 
-    // 관심종목 타겟 푸시 — 심볼 조회 후 전달
+    // 관심종목 타겟 푸시 — 심볼 조회 후 전달 (SELL 은 점수 필터 미적용, 토글만)
     (async () => {
       const sellStockIds = [...new Set(sellSignals.map((s: any) => s.stock_id))];
       const stocks = await this.prisma.stock.findMany({
