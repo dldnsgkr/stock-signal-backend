@@ -6,7 +6,35 @@ on:
       - 'v*'
 
 jobs:
+  # 배포 전 게이트: API 빌드 + 스코어러 테스트가 통과해야 deploy 가 돈다.
+  # (SSH 로 서버에서 빌드하다 실패하면 서비스가 어정쩡한 상태로 남을 수 있어,
+  #  서버를 건드리기 전에 CI 에서 먼저 검증한다.)
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: API build (prisma generate + nest build)
+        run: cd apps/api && pnpm prisma:generate && pnpm build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Scorer unit tests
+        run: |
+          cd apps/analysis-service
+          pip install numpy pytest
+          pytest -q
+
   deploy:
+    needs: verify
     runs-on: ubuntu-latest
 
     steps:

@@ -15,8 +15,23 @@ jobs:
           python-version: '3.12'
       - name: Install deps
         working-directory: apps/analysis-service
-        run: |
-          pip install numpy pytest
+        run: pip install numpy pytest
       - name: Run scorer unit tests
         working-directory: apps/analysis-service
         run: pytest -q
+
+  api-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: API build (prisma generate + nest build)
+        run: cd apps/api && pnpm prisma:generate && pnpm build
