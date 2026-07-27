@@ -71,12 +71,13 @@ async function dispatchWatchlistPush(
     if (symbols.length === 0) continue;
     const head = symbols.slice(0, 3).join(', ');
     const more = symbols.length > 3 ? ` 외 ${symbols.length - 3}` : '';
-    await push.sendToUsers([userId], {
-      title: `${emoji} 관심종목 ${label} 시그널`,
-      body: `${head}${more}에 ${label} 시그널이 발생했습니다`,
-      url: `/watchlist`,
-      tag: `watchlist-${action}-${market}`,
-    });
+    const title = `${emoji} 관심종목 ${label} 시그널`;
+    const body = `${head}${more}에 ${label} 시그널이 발생했습니다`;
+    await push.sendToUsers([userId], { title, body, url: `/watchlist`, tag: `watchlist-${action}-${market}` });
+    // 알림 이력 기록 (푸시 구독 여부와 무관하게 남긴다 — 이력 페이지용)
+    await prisma.notificationLog.create({
+      data: { userId, kind: action, title, body, url: '/watchlist', market },
+    }).catch(() => {});
     sentUsers++;
   }
   logger.log(`Watchlist ${action} push: ${sentUsers} user(s) for ${market}`);
@@ -325,12 +326,14 @@ export class RecommendationProcessor {
       // 브라우저 푸시 — 데일리 시그널 요약 (비동기, job 실패에 영향 없음)
       if (buyRecs.length > 0) {
         const top = buyRecs[0];
-        this.push.sendToAll({
-          title: `📈 ${market} 매수 시그널 ${buyRecs.length}건`,
-          body: `최고 점수: ${top.symbol} ${Number(top.score).toFixed(1)}점 (신뢰도 ${top.confidence}%)`,
-          url: `/recommendations?market=${market}&action=BUY`,
-          tag: `buy-signals-${market}`,
-        }).catch(e => this.logger.error(`BUY push failed: ${e}`));
+        const bTitle = `📈 ${market} 매수 시그널 ${buyRecs.length}건`;
+        const bBody = `최고 점수: ${top.symbol} ${Number(top.score).toFixed(1)}점 (신뢰도 ${top.confidence}%)`;
+        const bUrl = `/recommendations?market=${market}&action=BUY`;
+        this.push.sendToAll({ title: bTitle, body: bBody, url: bUrl, tag: `buy-signals-${market}` })
+          .catch(e => this.logger.error(`BUY push failed: ${e}`));
+        this.prisma.notificationLog.create({
+          data: { userId: null, kind: 'BROADCAST', title: bTitle, body: bBody, url: bUrl, market },
+        }).catch(() => {});
 
         // 관심종목 타겟 푸시 — 내가 담은 종목에 BUY 가 뜨면 개별 알림
         dispatchWatchlistPush(this.prisma, this.push, this.logger, buyRecs, 'BUY', market)
@@ -528,12 +531,16 @@ export class SellSignalProcessor {
     );
 
     // 브라우저 푸시 — SELL 요약
-    this.push.sendToAll({
-      title: `📉 ${market} 청산 시그널 ${sellSignals.length}건`,
-      body: `미결제 BUY ${openBuys.length}건 중 ${sellSignals.length}건 청산 판정`,
-      url: `/recommendations?market=${market}&action=SELL`,
-      tag: `sell-signals-${market}`,
-    }).catch(e => this.logger.error(`SELL push failed: ${e}`));
+    {
+      const sTitle = `📉 ${market} 청산 시그널 ${sellSignals.length}건`;
+      const sBody = `미결제 BUY ${openBuys.length}건 중 ${sellSignals.length}건 청산 판정`;
+      const sUrl = `/recommendations?market=${market}&action=SELL`;
+      this.push.sendToAll({ title: sTitle, body: sBody, url: sUrl, tag: `sell-signals-${market}` })
+        .catch(e => this.logger.error(`SELL push failed: ${e}`));
+      this.prisma.notificationLog.create({
+        data: { userId: null, kind: 'BROADCAST', title: sTitle, body: sBody, url: sUrl, market },
+      }).catch(() => {});
+    }
 
     // 관심종목 타겟 푸시 — 심볼 조회 후 전달 (SELL 은 점수 필터 미적용, 토글만)
     (async () => {

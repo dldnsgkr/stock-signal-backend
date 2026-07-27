@@ -253,8 +253,27 @@ model User {
   pushSubscriptions  PushSubscription[]
   alertSubscriptions AlertSubscription[]
   settings           UserSettings?
+  notifications      NotificationLog[]
 
   @@map("users")
+}
+
+// 발송된 시그널 알림 이력. user_id=null 이면 시장 전체(broadcast).
+model NotificationLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @map("user_id")
+  kind      String   @db.VarChar(20)  // 'BUY' | 'SELL' | 'BROADCAST'
+  title     String   @db.VarChar(200)
+  body      String   @db.VarChar(500)
+  url       String?  @db.VarChar(300)
+  market    String?  @db.VarChar(4)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("notification_log")
 }
 
 // 유저 개인 설정 (Auth 4단계). 없으면 코드 기본값 사용.
