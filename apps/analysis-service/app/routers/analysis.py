@@ -38,7 +38,8 @@ def _sanitize(obj):
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 logger = logging.getLogger(__name__)
 
-MODEL_VERSION = "ensemble_v2.0"
+# v2.1: 모멘텀 단기 반전 보정(∩자) — 과열 모멘텀 감점. scorer._momentum_score 참조.
+MODEL_VERSION = "ensemble_v2.1"
 
 
 class GenerateSignalsRequest(BaseModel):

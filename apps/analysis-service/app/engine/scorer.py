@@ -42,12 +42,20 @@ def _momentum_score(features: dict) -> tuple[float, float]:
     score += 10 if ma60_pos > 0.03 else (-10 if ma60_pos < -0.03 else 0)
     data_points += 1
 
+    # 단기 반전(short-term reversal, ensemble_v2.1): 완만한 모멘텀에 가점,
+    # 과열엔 감점하는 ∩자. 과거엔 mom>10% 에 최대 가점을 줘서 고점을 추격하다
+    # 되돌림을 맞았다 — 20일 모멘텀 구간별 7일 알파가 KR/US 모두 ∩자로 확인됨
+    # (0~10% 최선, 40%+ 최악). 오프라인 백테스트: US top20 알파 +4.0%p·적중 +8.2%p,
+    # KR +1.3%p·+1.9%p 개선. (단기 반전은 검증된 이례현상 — Jegadeesh 1990~)
     mom_5d = t.get("momentum_5d", 0)
-    score += 8 if mom_5d > 0.05 else (4 if mom_5d > 0.02 else (-8 if mom_5d < -0.05 else 0))
+    score += (-8 if mom_5d > 0.15 else -2 if mom_5d > 0.08 else 6 if mom_5d > 0.02
+              else 3 if mom_5d > 0 else 1 if mom_5d > -0.05 else -4 if mom_5d > -0.15 else -8)
     data_points += 1
 
     mom_20d = t.get("momentum_20d", 0)
-    score += 10 if mom_20d > 0.10 else (5 if mom_20d > 0.03 else (-10 if mom_20d < -0.10 else 0))
+    score += (-15 if mom_20d > 0.40 else -8 if mom_20d > 0.20 else -2 if mom_20d > 0.10
+              else 8 if mom_20d > 0.03 else 4 if mom_20d > 0 else 2 if mom_20d > -0.10
+              else -4 if mom_20d > -0.20 else -8)
     data_points += 1
 
     vol_growth = t.get("volume_growth_rate", 0)

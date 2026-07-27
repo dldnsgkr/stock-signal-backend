@@ -73,6 +73,18 @@ def test_momentum_score_clamped_low():
     assert s < 30.0
 
 
+def test_momentum_reversal_extreme_penalized():
+    # v2.1 단기 반전: 완만한 상승 모멘텀이 극단 과열보다 높은 점수여야 한다.
+    moderate = _momentum_score(make_features(technical={"momentum_20d": 0.05, "momentum_5d": 0.03}))[0]
+    extreme = _momentum_score(make_features(technical={"momentum_20d": 0.50, "momentum_5d": 0.20}))[0]
+    assert moderate > extreme            # 과열 모멘텀은 감점
+
+def test_momentum_sweetspot_beats_flat():
+    # 완만한 양의 모멘텀(스위트스팟)은 무모멘텀(0)보다 가점
+    sweet = _momentum_score(make_features(technical={"momentum_20d": 0.05}))[0]
+    flat = _momentum_score(make_features(technical={"momentum_20d": 0.0}))[0]
+    assert sweet > flat
+
 def test_value_score_high_quality_fundamentals():
     good = {"roe": 0.25, "per_relative": 8, "pbr_relative": 0.8}
     s, q = _value_score(make_features(fundamental=good))
