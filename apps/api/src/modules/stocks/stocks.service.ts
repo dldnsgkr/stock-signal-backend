@@ -113,6 +113,72 @@ export class StocksService {
     }));
   }
 
+  // 종목 비교 (최대 4개) — 최신 시그널·점수구성·현재가·재무 스냅샷.
+  async compare(symbols: string[]) {
+    const uniq = [...new Set(symbols.map(s => s.trim().toUpperCase()).filter(Boolean))].slice(0, 4);
+    const out = [];
+    for (const sym of uniq) {
+      const stock = await this.prisma.stock.findFirst({
+        where: { symbol: sym },
+        include: { market: true },
+      });
+      if (!stock) {
+        out.push({ symbol: sym, notFound: true });
+        continue;
+      }
+
+      const [latestRec, fin, prices] = await Promise.all([
+        this.prisma.recommendation.findFirst({
+          where: { stockId: stock.id },
+          orderBy: { recommendedAt: 'desc' },
+          include: { result: true },
+        }),
+        this.prisma.financialMetrics.findFirst({
+          where: { stockId: stock.id },
+          orderBy: { periodEnd: 'desc' },
+        }),
+        this.prisma.priceDaily.findMany({
+          where: { stockId: stock.id },
+          orderBy: { date: 'desc' },
+          take: 2,
+          select: { close: true },
+        }),
+      ]);
+
+      const close = prices[0] ? Number(prices[0].close) : null;
+      const prev = prices[1] ? Number(prices[1].close) : null;
+      const sd = (latestRec?.scoreDetailJson ?? {}) as Record<string, number>;
+      const num = (v: unknown) => (v == null ? null : Number(v));
+
+      out.push({
+        symbol: stock.symbol,
+        name: stock.name,
+        sector: stock.sector,
+        market: stock.market?.code ?? 'US',
+        currentPrice: close,
+        changeRate: close != null && prev ? ((close - prev) / prev) * 100 : null,
+        action: latestRec?.action ?? null,
+        score: latestRec ? Number(latestRec.score) : null,
+        confidence: latestRec?.confidence ?? null,
+        recommendedAt: latestRec?.recommendedAt ?? null,
+        scoreDetail: latestRec
+          ? {
+              momentum: sd.momentum_score ?? sd.technical_score ?? null,
+              value: sd.value_score ?? sd.fundamental_score ?? null,
+              sentiment: sd.sentiment_score ?? sd.news_score ?? null,
+            }
+          : null,
+        result: latestRec?.result
+          ? { return7d: num(latestRec.result.return7d), return30d: num(latestRec.result.return30d) }
+          : null,
+        fundamentals: fin
+          ? { roe: num(fin.roe), per: num(fin.per), pbr: num(fin.pbr), debtRatio: num(fin.debtRatio) }
+          : null,
+      });
+    }
+    return out;
+  }
+
   // KR 전용 — investor_flow_daily 는 KRX 데이터만 적재된다.
   async getInvestorFlow(symbol: string, days = 90) {
     const stock = await this.findBySymbol(symbol);

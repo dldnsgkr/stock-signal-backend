@@ -16,6 +16,13 @@ export class StocksController {
     return this.stocksService.getSectorSummary(market);
   }
 
+  @Get('compare')
+  @ApiOperation({ summary: '종목 비교 (최대 4개, symbols=A,B,C)' })
+  @ApiQuery({ name: 'symbols', required: true, description: '쉼표 구분 심볼' })
+  compare(@Query('symbols') symbols = '') {
+    return this.stocksService.compare(symbols.split(',').filter(Boolean));
+  }
+
   @Get()
   @ApiOperation({ summary: '종목 목록 조회 (cursor 기반 무한스크롤)' })
   @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
