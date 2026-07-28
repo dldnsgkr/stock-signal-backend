@@ -84,6 +84,13 @@ export class StocksController {
     return this.stocksService.getInvestorFlow(symbol, +days);
   }
 
+  @Get(':symbol/briefing')
+  @ApiOperation({ summary: 'AI 종목 브리핑 (LLM)' })
+  @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })
+  getBriefing(@Param('symbol') symbol: string, @Query('market') market = 'US') {
+    return this.stocksService.getBriefing(symbol, market);
+  }
+
   @Get(':symbol/technical-levels')
   @ApiOperation({ summary: '지지선·저항선 + 이동평균 + 가격 전망' })
   @ApiQuery({ name: 'market', required: false, enum: ['US', 'KR'] })

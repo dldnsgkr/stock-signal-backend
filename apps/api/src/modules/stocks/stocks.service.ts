@@ -204,6 +204,21 @@ export class StocksService {
     return { symbol: stock.symbol, market: stock.market.code, flows: [...byDate.values()] };
   }
 
+  // AI 브리핑 — analysis 서비스 프록시 (LLM 호출·캐시는 그쪽에서)
+  async getBriefing(symbol: string, market: string) {
+    const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
+    try {
+      const res = await axios.get(
+        `${baseUrl}/analysis/briefing?symbol=${encodeURIComponent(symbol.toUpperCase())}&market=${market.toUpperCase()}`,
+        { timeout: 40000, validateStatus: () => true },
+      );
+      return res.data;
+    } catch (err: any) {
+      this.logger.error(`briefing failed for ${symbol}: ${err.message}`);
+      return { error: 'briefing unavailable' };
+    }
+  }
+
   async getTechnicalLevels(symbol: string, market: string) {
     const baseUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
     try {
