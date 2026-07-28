@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"   # LLM_* 등 .env 의 추가 변수(os.getenv 로 읽는 것)를 거부하지 않도록
 
 
 settings = Settings()

@@ -105,7 +105,9 @@ async def briefing(
 
     prompt = _build_prompt(row, news_rows, flow_line)
     try:
-        text_out = generate_text(prompt, max_tokens=500, temperature=0.4)
+        # gemini-flash-latest 는 사고(thinking) 토큰을 ~500 소비하므로 넉넉히 준다
+        # (thinkingBudget=0 은 이 모델에서 400 거부됨). 부족하면 답이 잘린다.
+        text_out = generate_text(prompt, max_tokens=2000, temperature=0.4)
     except LLMError as e:
         logger.error(f"briefing LLM 실패 {sym}: {e}")
         return JSONResponse(status_code=503, content={"error": "브리핑 생성 실패"})
