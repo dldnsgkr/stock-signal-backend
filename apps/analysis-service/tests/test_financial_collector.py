@@ -5,16 +5,20 @@
     매출·순이익이 전부 NULL 이던 버그. 이게 재발하면 PER 폴백도 같이 죽는다)
   - 적자·자본잠식 기업에 엉터리 PER/PBR 을 만들지 않는가
   - 자기자본 행 이름이 티커마다 달라도 뽑아내는가
+
+`financial_collector` 가 아니라 `financial_math` 를 import 하는 이유:
+CI 는 `pip install numpy pytest` 만 하고 pytest 를 돌린다(test.yml). 수집기 본체는
+yfinance·sqlalchemy 를 끌고 와서 CI 에서 import 자체가 실패한다.
 """
 import pytest
 
-from app.collectors.financial_collector import (
+from app.collectors.financial_math import (
     PBR_MAX,
     PER_MAX,
-    _derive_ratio,
-    _extract_equity,
-    _safe_amount,
-    _safe_float,
+    derive_ratio as _derive_ratio,
+    extract_equity as _extract_equity,
+    safe_amount as _safe_amount,
+    safe_float as _safe_float,
 )
 
 
