@@ -548,104 +548,123 @@ export class AdminService {
   }
 
   async getScoringAnalysis(market = 'US') {
-    // 평가 완료(hit7d) 건만 조회한다.
+    // 집계를 SQL 로 내린다. 예전에는 추천 행을 Node 로 퍼올려 배열로 계산했는데
+    // 두 가지가 잘못됐다:
     //
-    // 예전에는 `result: { isNot: null }` 로 넓게 가져와 take 뒤에 hit7d 를 걸렀다.
-    // 그런데 take 는 정렬 후 잘라내므로, 하루 BUY 가 1,000~1,800건인 지금은
-    // 최근 2,000건이 통째로 '7일 미성숙' 구간에 들어가 **항상 0건**이 됐다
-    // (2026-08-08 발견: US 는 2,000건이 전부 하루치, hit7d 채워진 게 0개인데
-    //  실제 평가 완료 BUY 는 88,334건 있었다). BUY 수가 늘수록 악화되는 형태라
-    //  조용히 망가진 채 오래 갔다.
+    //  1) `take` 가 필터보다 먼저 적용돼, 하루 BUY 가 1,000건을 넘자 최근 N건이
+    //     통째로 '7일 미성숙' 구간에 들어가 항상 0건이 됐다 (v3.12.1 에서 수정).
+    //  2) 조회 대상이 BUY 뿐이라 **65점 미만 임계값을 검증할 수 없었다.** BUY 는
+    //     정의상 점수 >= 65 라, 임계값 50/55/60/65 가 전부 같은 표본이 되어
+    //     "최적 임계값 50점" 같은 아티팩트가 나왔다. 임계값을 낮추라는 실행 가능한
+    //     조언 형태라 그대로 두면 위험했다.
     //
-    // 상한은 20,000 — 화면 설명이 '누적 성과'인데 2,000이면 US 기준 하루치라
-    // 취지에 못 미친다. 20,000이면 US 약 2주 / KR 약 5주치가 잡힌다.
-    const recs = await this.prisma.recommendation.findMany({
-      where: {
-        action: 'BUY',
-        run: { marketCode: market },
-        result: { hit7d: { not: null } },
-      },
-      select: {
-        score: true,
-        scoreDetailJson: true,
-        result: { select: { return7d: true, hit7d: true } },
-      },
-      orderBy: { recommendedAt: 'desc' },
-      take: 20000,
-    });
+    // 그래서 **채점된 전 종목(WATCH/AVOID 포함)** 을 대상으로 바꿨다. 그러면 행이
+    // 시장당 30만 건대라 Node 로 들고 오는 방식은 성립하지 않는다 — 세 집계를
+    // 모두 Postgres 에서 계산한다(실측 각 1~2초).
+    const WINDOW_DAYS = 90;
+    const CURRENT_THRESHOLD = 65;
 
-    const evaluated = recs;   // 쿼리에서 이미 hit7d 가 채워진 건만 가져온다
-    const totalEvaluated = evaluated.length;
+    type ThresholdRow = { thr: number; cnt: number; hit_rate: number | null; avg_return: number | null };
+    const thresholdRows = await this.prisma.$queryRaw<ThresholdRow[]>`
+      WITH ev AS (
+        SELECT rec.score, res.hit_7d, res.return_7d
+        FROM recommendations rec
+        JOIN recommendation_runs r ON r.id = rec.recommendation_run_id
+        JOIN recommendation_results res ON res.recommendation_id = rec.id
+        WHERE r.market_code = ${market}
+          AND res.hit_7d IS NOT NULL
+          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS})
+      )
+      SELECT t.thr::int AS thr,
+             COUNT(ev.score)::int AS cnt,
+             AVG(CASE WHEN ev.hit_7d THEN 1.0 ELSE 0 END)::float AS hit_rate,
+             AVG(ev.return_7d)::float AS avg_return
+      FROM (VALUES (50),(55),(60),(65),(70),(75),(80)) AS t(thr)
+      LEFT JOIN ev ON ev.score >= t.thr
+      GROUP BY t.thr
+      ORDER BY t.thr
+    `;
 
-    // ── 1. 임계값 민감도 ──────────────────────────────────────────────────
-    const THRESHOLDS = [50, 55, 60, 65, 70, 75, 80];
-    const thresholdSensitivity = THRESHOLDS.map(thr => {
-      const above = evaluated.filter(r => Number(r.score) >= thr);
-      const hits  = above.filter(r => r.result?.hit7d === true);
-      const ret   = above.map(r => Number(r.result?.return7d ?? 0));
-      return {
-        threshold:  thr,
-        count:      above.length,
-        hitRate7d:  above.length > 0 ? hits.length / above.length : null,
-        avgReturn7d: above.length > 0 ? ret.reduce((a, b) => a + b, 0) / ret.length : null,
-        isCurrent:  thr === 65,
-      };
-    });
+    type BandRow = { band: string; lo: number; cnt: number; hit_rate: number | null; avg_return: number | null };
+    const bandRows = await this.prisma.$queryRaw<BandRow[]>`
+      WITH ev AS (
+        SELECT rec.score, res.hit_7d, res.return_7d
+        FROM recommendations rec
+        JOIN recommendation_runs r ON r.id = rec.recommendation_run_id
+        JOIN recommendation_results res ON res.recommendation_id = rec.id
+        WHERE r.market_code = ${market}
+          AND res.hit_7d IS NOT NULL
+          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS})
+      )
+      SELECT CASE WHEN score < 50 THEN '<50'   WHEN score < 55 THEN '50–55'
+                  WHEN score < 60 THEN '55–60' WHEN score < 65 THEN '60–65'
+                  WHEN score < 70 THEN '65–70' WHEN score < 75 THEN '70–75'
+                  ELSE '75+' END AS band,
+             MIN(score)::float AS lo,
+             COUNT(*)::int AS cnt,
+             AVG(CASE WHEN hit_7d THEN 1.0 ELSE 0 END)::float AS hit_rate,
+             AVG(return_7d)::float AS avg_return
+      FROM ev GROUP BY 1 ORDER BY 2
+    `;
 
-    // ── 2. 점수 구간별 성과 ───────────────────────────────────────────────
-    const BANDS = [
-      { min: 0,  max: 50,  label: '<50'   },
-      { min: 50, max: 55,  label: '50–55' },
-      { min: 55, max: 60,  label: '55–60' },
-      { min: 60, max: 65,  label: '60–65' },
-      { min: 65, max: 70,  label: '65–70' },
-      { min: 70, max: 75,  label: '70–75' },
-      { min: 75, max: 101, label: '75+'   },
-    ];
-    const scoreBands = BANDS.map(b => {
-      const inBand = evaluated.filter(r => {
-        const s = Number(r.score);
-        return s >= b.min && s < b.max;
-      });
-      const hits = inBand.filter(r => r.result?.hit7d === true);
-      const ret  = inBand.map(r => Number(r.result?.return7d ?? 0));
-      return {
-        band:           b.label,
-        count:          inBand.length,
-        hitRate7d:      inBand.length > 0 ? hits.length / inBand.length : null,
-        avgReturn7d:    inBand.length > 0 ? ret.reduce((a, b) => a + b, 0) / ret.length : null,
-        isCurrentBuyZone: b.min >= 65,
-      };
-    }).filter(b => b.count > 0);
+    // 주도 전략 = momentum·value·sentiment 서브스코어 중 가장 높은 것.
+    // 원래 TS 판정식(>= / >)을 그대로 옮겨 결과가 달라지지 않게 했다.
+    type StratRow = { strat: string; cnt: number; hit_rate: number | null; avg_return: number | null };
+    const stratRows = await this.prisma.$queryRaw<StratRow[]>`
+      WITH ev AS (
+        SELECT res.hit_7d, res.return_7d,
+               COALESCE((rec.score_detail_json->>'momentum_score')::numeric, 0)  AS mom,
+               COALESCE((rec.score_detail_json->>'value_score')::numeric, 0)     AS val,
+               COALESCE((rec.score_detail_json->>'sentiment_score')::numeric, 0) AS sent
+        FROM recommendations rec
+        JOIN recommendation_runs r ON r.id = rec.recommendation_run_id
+        JOIN recommendation_results res ON res.recommendation_id = rec.id
+        WHERE r.market_code = ${market}
+          AND res.hit_7d IS NOT NULL
+          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS})
+      )
+      SELECT CASE WHEN mom >= val AND mom >= sent THEN 'momentum'
+                  WHEN val > mom AND val >= sent  THEN 'value'
+                  ELSE 'sentiment' END AS strat,
+             COUNT(*)::int AS cnt,
+             AVG(CASE WHEN hit_7d THEN 1.0 ELSE 0 END)::float AS hit_rate,
+             AVG(return_7d)::float AS avg_return
+      FROM ev GROUP BY 1
+    `;
 
-    // ── 3. 전략 기여도 ────────────────────────────────────────────────────
+    const totalEvaluated = thresholdRows.find((r: ThresholdRow) => r.thr === 50)?.cnt ?? 0;
+
+    const thresholdSensitivity = thresholdRows.map((r: ThresholdRow) => ({
+      threshold:   r.thr,
+      count:       r.cnt,
+      hitRate7d:   r.cnt > 0 ? r.hit_rate : null,
+      avgReturn7d: r.cnt > 0 ? r.avg_return : null,
+      isCurrent:   r.thr === CURRENT_THRESHOLD,
+    }));
+
+    const scoreBands = bandRows.map((r: BandRow) => ({
+      band:             r.band,
+      count:            r.cnt,
+      hitRate7d:        r.hit_rate,
+      avgReturn7d:      r.avg_return,
+      isCurrentBuyZone: r.lo >= CURRENT_THRESHOLD,
+    }));
+
     type StratKey = 'momentum' | 'value' | 'sentiment';
     const WEIGHTS: Record<StratKey, number> = { momentum: 0.45, value: 0.25, sentiment: 0.30 };
     const LABELS:  Record<StratKey, string> = { momentum: '모멘텀', value: '가치', sentiment: '감성' };
-
     const strategyBreakdown = (['momentum', 'value', 'sentiment'] as StratKey[]).map(strat => {
-      const dominated = evaluated.filter(r => {
-        const d   = r.scoreDetailJson as Record<string, number> | null;
-        const mom  = d?.momentum_score  ?? 0;
-        const val  = d?.value_score     ?? 0;
-        const sent = d?.sentiment_score ?? 0;
-        if (strat === 'momentum')  return mom >= val  && mom >= sent;
-        if (strat === 'value')     return val  > mom  && val >= sent;
-        return sent > mom && sent > val;
-      });
-      const hits = dominated.filter(r => r.result?.hit7d === true);
-      const ret  = dominated.map(r => Number(r.result?.return7d ?? 0));
+      const row = stratRows.find((r: StratRow) => r.strat === strat);
       return {
         strategy:      strat,
         label:         LABELS[strat],
-        count:         dominated.length,
-        hitRate7d:     dominated.length > 0 ? hits.length / dominated.length : null,
-        avgReturn7d:   dominated.length > 0 ? ret.reduce((a, b) => a + b, 0) / ret.length : null,
+        count:         row?.cnt ?? 0,
+        hitRate7d:     row?.hit_rate ?? null,
+        avgReturn7d:   row?.avg_return ?? null,
         currentWeight: WEIGHTS[strat],
       };
     });
 
-    // ── 4. 인사이트 요약 ──────────────────────────────────────────────────
     const currentThr = thresholdSensitivity.find(t => t.isCurrent);
     const bestThr = thresholdSensitivity
       .filter(t => t.count >= 5 && t.hitRate7d != null)
@@ -656,12 +675,13 @@ export class AdminService {
 
     return {
       market,
+      windowDays: WINDOW_DAYS,
       totalEvaluated,
       thresholdSensitivity,
       scoreBands,
       strategyBreakdown,
       insight: {
-        currentThreshold:        65,
+        currentThreshold:        CURRENT_THRESHOLD,
         currentThresholdHitRate: currentThr?.hitRate7d ?? null,
         bestThreshold:           bestThr?.threshold ?? null,
         bestThresholdHitRate:    bestThr?.hitRate7d  ?? null,
