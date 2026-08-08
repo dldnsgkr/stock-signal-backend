@@ -16,6 +16,7 @@ recommendations.feature_snapshot_json 에는 추천 시점에 계산된 피처�
 
 import json
 import logging
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -114,8 +115,21 @@ async def rescore(body: RescoreRequest, db: AsyncSession = Depends(get_db)):
           )
         ORDER BY rr.executed_at
     """)
+    # asyncpg 는 ::date 파라미터에 **문자열을 받지 않는다** — date 객체여야 한다.
+    # 문자열을 그대로 넘기면 `'str' object has no attribute 'toordinal'` 로 500 이 난다.
+    # 기간을 지정하면 무조건 터지던 상태였고, 백테스트 화면이 실사용 검증을 안 거쳐
+    # 오래 방치됐다(2026-08-09 발견).
+    try:
+        d_from = date.fromisoformat(body.fromdate) if body.fromdate else None
+        d_to = date.fromisoformat(body.todate) if body.todate else None
+    except ValueError:
+        return JSONResponse(
+            content={"error": "fromdate/todate 는 YYYY-MM-DD 형식이어야 합니다"},
+            status_code=400,
+        )
+
     runs = (await db.execute(runs_sql, {
-        "market": market, "fromdate": body.fromdate, "todate": body.todate,
+        "market": market, "fromdate": d_from, "todate": d_to,
     })).all()
 
     if not runs:
@@ -162,19 +176,22 @@ async def rescore(body: RescoreRequest, db: AsyncSession = Depends(get_db)):
                 # 스냅샷 구조가 다른 과거 데이터는 건너뛴다.
                 scoring_errors += 1
                 continue
-            rescored.append((new_score, ret_f, alpha_f))
+            rescored.append((new_score, rid, ret_f, alpha_f))
 
         if not rescored:
             continue
 
         if body.top_n:
-            rescored.sort(key=lambda x: x[0], reverse=True)
+            # 동점이 흔하다(점수가 소수 2자리로 반올림된다). 조회 SQL 에 ORDER BY 가 없어
+            # 행 순서가 실행마다 달라지므로, 반드시 id 로 결정적으로 끊는다.
+            # 안 그러면 같은 요청이 실행마다 다른 수치를 낸다.
+            rescored.sort(key=lambda x: (-x[0], x[1]))
             selected = rescored[: body.top_n]
         else:
             selected = [x for x in rescored if x[0] >= threshold]
 
         run_acc = _Acc()
-        for _, ret_f, alpha_f in selected:
+        for _, _rid, ret_f, alpha_f in selected:
             run_acc.add(ret_f, alpha_f)
             variant.add(ret_f, alpha_f)
 
