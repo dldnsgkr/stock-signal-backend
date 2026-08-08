@@ -548,11 +548,22 @@ export class AdminService {
   }
 
   async getScoringAnalysis(market = 'US') {
+    // 평가 완료(hit7d) 건만 조회한다.
+    //
+    // 예전에는 `result: { isNot: null }` 로 넓게 가져와 take 뒤에 hit7d 를 걸렀다.
+    // 그런데 take 는 정렬 후 잘라내므로, 하루 BUY 가 1,000~1,800건인 지금은
+    // 최근 2,000건이 통째로 '7일 미성숙' 구간에 들어가 **항상 0건**이 됐다
+    // (2026-08-08 발견: US 는 2,000건이 전부 하루치, hit7d 채워진 게 0개인데
+    //  실제 평가 완료 BUY 는 88,334건 있었다). BUY 수가 늘수록 악화되는 형태라
+    //  조용히 망가진 채 오래 갔다.
+    //
+    // 상한은 20,000 — 화면 설명이 '누적 성과'인데 2,000이면 US 기준 하루치라
+    // 취지에 못 미친다. 20,000이면 US 약 2주 / KR 약 5주치가 잡힌다.
     const recs = await this.prisma.recommendation.findMany({
       where: {
         action: 'BUY',
         run: { marketCode: market },
-        result: { isNot: null },
+        result: { hit7d: { not: null } },
       },
       select: {
         score: true,
@@ -560,10 +571,10 @@ export class AdminService {
         result: { select: { return7d: true, hit7d: true } },
       },
       orderBy: { recommendedAt: 'desc' },
-      take: 2000,
+      take: 20000,
     });
 
-    const evaluated = recs.filter(r => r.result?.hit7d != null);
+    const evaluated = recs;   // 쿼리에서 이미 hit7d 가 채워진 건만 가져온다
     const totalEvaluated = evaluated.length;
 
     // ── 1. 임계값 민감도 ──────────────────────────────────────────────────
