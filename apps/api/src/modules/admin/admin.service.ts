@@ -567,10 +567,10 @@ export class AdminService {
     const WINDOW_DAYS = 90;
     const CURRENT_THRESHOLD = 65;
 
-    type ThresholdRow = { thr: number; cnt: number; hit_rate: number | null; avg_return: number | null };
+    type ThresholdRow = { thr: number; cnt: number; hit_rate: number | null; avg_return: number | null; avg_alpha: number | null };
     const thresholdRows = await this.prisma.$queryRaw<ThresholdRow[]>`
       WITH ev AS (
-        SELECT rec.score, res.hit_7d, res.return_7d
+        SELECT rec.score, res.hit_7d, res.return_7d, res.alpha_7d
         FROM recommendations rec
         JOIN recommendation_runs r ON r.id = rec.recommendation_run_id
         JOIN recommendation_results res ON res.recommendation_id = rec.id
@@ -581,17 +581,18 @@ export class AdminService {
       SELECT t.thr::int AS thr,
              COUNT(ev.score)::int AS cnt,
              AVG(CASE WHEN ev.hit_7d THEN 1.0 ELSE 0 END)::float AS hit_rate,
-             AVG(ev.return_7d)::float AS avg_return
+             AVG(ev.return_7d)::float AS avg_return,
+             AVG(ev.alpha_7d)::float AS avg_alpha
       FROM (VALUES (50),(55),(60),(65),(70),(75),(80)) AS t(thr)
       LEFT JOIN ev ON ev.score >= t.thr
       GROUP BY t.thr
       ORDER BY t.thr
     `;
 
-    type BandRow = { band: string; lo: number; cnt: number; hit_rate: number | null; avg_return: number | null };
+    type BandRow = { band: string; lo: number; cnt: number; hit_rate: number | null; avg_return: number | null; avg_alpha: number | null };
     const bandRows = await this.prisma.$queryRaw<BandRow[]>`
       WITH ev AS (
-        SELECT rec.score, res.hit_7d, res.return_7d
+        SELECT rec.score, res.hit_7d, res.return_7d, res.alpha_7d
         FROM recommendations rec
         JOIN recommendation_runs r ON r.id = rec.recommendation_run_id
         JOIN recommendation_results res ON res.recommendation_id = rec.id
@@ -606,16 +607,17 @@ export class AdminService {
              MIN(score)::float AS lo,
              COUNT(*)::int AS cnt,
              AVG(CASE WHEN hit_7d THEN 1.0 ELSE 0 END)::float AS hit_rate,
-             AVG(return_7d)::float AS avg_return
+             AVG(return_7d)::float AS avg_return,
+             AVG(alpha_7d)::float AS avg_alpha
       FROM ev GROUP BY 1 ORDER BY 2
     `;
 
     // 주도 전략 = momentum·value·sentiment 서브스코어 중 가장 높은 것.
     // 원래 TS 판정식(>= / >)을 그대로 옮겨 결과가 달라지지 않게 했다.
-    type StratRow = { strat: string; cnt: number; hit_rate: number | null; avg_return: number | null };
+    type StratRow = { strat: string; cnt: number; hit_rate: number | null; avg_return: number | null; avg_alpha: number | null };
     const stratRows = await this.prisma.$queryRaw<StratRow[]>`
       WITH ev AS (
-        SELECT res.hit_7d, res.return_7d,
+        SELECT res.hit_7d, res.return_7d, res.alpha_7d,
                COALESCE((rec.score_detail_json->>'momentum_score')::numeric, 0)  AS mom,
                COALESCE((rec.score_detail_json->>'value_score')::numeric, 0)     AS val,
                COALESCE((rec.score_detail_json->>'sentiment_score')::numeric, 0) AS sent
@@ -631,7 +633,8 @@ export class AdminService {
                   ELSE 'sentiment' END AS strat,
              COUNT(*)::int AS cnt,
              AVG(CASE WHEN hit_7d THEN 1.0 ELSE 0 END)::float AS hit_rate,
-             AVG(return_7d)::float AS avg_return
+             AVG(return_7d)::float AS avg_return,
+             AVG(alpha_7d)::float AS avg_alpha
       FROM ev GROUP BY 1
     `;
 
@@ -644,6 +647,7 @@ export class AdminService {
       count:       r.cnt,
       hitRate7d:   r.cnt > 0 ? r.hit_rate : null,
       avgReturn7d: r.cnt > 0 ? r.avg_return : null,
+      avgAlpha7d:  r.cnt > 0 ? r.avg_alpha : null,
       isCurrent:   r.thr === CURRENT_THRESHOLD,
     }));
 
@@ -652,6 +656,7 @@ export class AdminService {
       count:            r.cnt,
       hitRate7d:        r.hit_rate,
       avgReturn7d:      r.avg_return,
+      avgAlpha7d:       r.avg_alpha,
       isCurrentBuyZone: r.lo >= CURRENT_THRESHOLD,
     }));
 
@@ -666,6 +671,7 @@ export class AdminService {
         count:         row?.cnt ?? 0,
         hitRate7d:     row?.hit_rate ?? null,
         avgReturn7d:   row?.avg_return ?? null,
+        avgAlpha7d:    row?.avg_alpha ?? null,
         currentWeight: WEIGHTS[strat],
       };
     });
