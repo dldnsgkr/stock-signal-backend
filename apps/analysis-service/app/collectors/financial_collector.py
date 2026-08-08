@@ -10,6 +10,15 @@ from app.collectors.financial_math import (
 
 logger = logging.getLogger(__name__)
 
+# 분기 손익계산서 — 티커마다 행 이름이 다르다. 앞쪽을 우선한다.
+Q_REVENUE_KEYS = ("Total Revenue", "Operating Revenue")
+Q_OP_INCOME_KEYS = ("Total Operating Income As Reported", "Operating Income", "EBIT")
+Q_NET_INCOME_KEYS = ("Net Income From Continuing Operation Net Minority Interest",
+                     "Net Income Common Stockholders", "Net Income")
+# 최신 분기가 이보다 오래됐을 때만 다시 받는다. 분기 실적은 3개월마다 갱신되므로
+# 매일 받을 이유가 없다 — 첫 전수 수집 후에는 대부분 건너뛴다.
+QUARTERLY_REFRESH_DAYS = 80
+
 
 async def collect_financials(
     db: AsyncSession,
