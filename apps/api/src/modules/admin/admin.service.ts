@@ -635,7 +635,9 @@ export class AdminService {
       FROM ev GROUP BY 1
     `;
 
-    const totalEvaluated = thresholdRows.find((r: ThresholdRow) => r.thr === 50)?.cnt ?? 0;
+    // 임계값 50 이상 건수를 전체로 쓰면 안 된다 — 50점 미만이 통째로 빠진다
+    // (KR 은 <50 구간이 90,162건으로 전체의 72% 다). 구간별 합이 진짜 전체다.
+    const totalEvaluated = bandRows.reduce((sum: number, r: BandRow) => sum + r.cnt, 0);
 
     const thresholdSensitivity = thresholdRows.map((r: ThresholdRow) => ({
       threshold:   r.thr,
