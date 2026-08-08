@@ -69,6 +69,8 @@ class FinancialMetrics(Base):
 
     stock = relationship("Stock", back_populates="financials")
 
+    __table_args__ = (UniqueConstraint("stock_id", "period_type", "period_end"),)
+
 
 class QuarterlyFinancials(Base):
     """분기 손익계산서 — financial_metrics 와 섞지 않는다.
@@ -86,8 +88,7 @@ class QuarterlyFinancials(Base):
     operating_income = Column(Numeric(20, 2))
     net_income = Column(Numeric(20, 2))
 
-
-    __table_args__ = (UniqueConstraint("stock_id", "period_type", "period_end"),)
+    __table_args__ = (UniqueConstraint("stock_id", "period_end"),)
 
 
 class NewsArticle(Base):
