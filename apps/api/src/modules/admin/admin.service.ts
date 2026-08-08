@@ -561,6 +561,9 @@ export class AdminService {
     // 그래서 **채점된 전 종목(WATCH/AVOID 포함)** 을 대상으로 바꿨다. 그러면 행이
     // 시장당 30만 건대라 Node 로 들고 오는 방식은 성립하지 않는다 — 세 집계를
     // 모두 Postgres 에서 계산한다(실측 각 1~2초).
+    // ⚠️ `${WINDOW_DAYS}::int` 의 캐스트를 빼지 말 것 — Prisma 는 JS number 를
+    //    bigint 로 바인딩하는데 make_interval(days => ...) 은 int 만 받는다.
+    //    psql 에서 리터럴 90 으로 테스트하면 통과하고 운영에서 500 이 난다(실제로 겪음).
     const WINDOW_DAYS = 90;
     const CURRENT_THRESHOLD = 65;
 
@@ -573,7 +576,7 @@ export class AdminService {
         JOIN recommendation_results res ON res.recommendation_id = rec.id
         WHERE r.market_code = ${market}
           AND res.hit_7d IS NOT NULL
-          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS})
+          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS}::int)
       )
       SELECT t.thr::int AS thr,
              COUNT(ev.score)::int AS cnt,
@@ -594,7 +597,7 @@ export class AdminService {
         JOIN recommendation_results res ON res.recommendation_id = rec.id
         WHERE r.market_code = ${market}
           AND res.hit_7d IS NOT NULL
-          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS})
+          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS}::int)
       )
       SELECT CASE WHEN score < 50 THEN '<50'   WHEN score < 55 THEN '50–55'
                   WHEN score < 60 THEN '55–60' WHEN score < 65 THEN '60–65'
@@ -621,7 +624,7 @@ export class AdminService {
         JOIN recommendation_results res ON res.recommendation_id = rec.id
         WHERE r.market_code = ${market}
           AND res.hit_7d IS NOT NULL
-          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS})
+          AND rec.recommended_at >= NOW() - make_interval(days => ${WINDOW_DAYS}::int)
       )
       SELECT CASE WHEN mom >= val AND mom >= sent THEN 'momentum'
                   WHEN val > mom AND val >= sent  THEN 'value'
