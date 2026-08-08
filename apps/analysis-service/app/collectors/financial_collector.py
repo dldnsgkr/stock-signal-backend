@@ -1,9 +1,9 @@
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import yfinance as yf
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.models.db_models import Stock, Market, FinancialMetrics
+from sqlalchemy import select, func
+from app.models.db_models import Stock, Market, FinancialMetrics, QuarterlyFinancials
 from app.collectors.financial_math import (
     PBR_MAX, PER_MAX, derive_ratio, extract_equity, safe_amount, safe_float,
 )
@@ -26,7 +26,19 @@ async def collect_financials(
     )
     stocks = result.scalars().all()
 
+    # 종목마다 쿼리하면 배치당 수백 번이 되므로 한 번에 읽는다.
+    stale_before = date.today() - timedelta(days=QUARTERLY_REFRESH_DAYS)
+    latest_q: dict[int, date] = {}
+    if stocks:
+        q_rows = await db.execute(
+            select(QuarterlyFinancials.stock_id, func.max(QuarterlyFinancials.period_end))
+            .where(QuarterlyFinancials.stock_id.in_([s.id for s in stocks]))
+            .group_by(QuarterlyFinancials.stock_id)
+        )
+        latest_q = {sid: pe for sid, pe in q_rows.all()}
+
     collected = 0
+    quarters_saved = 0
     skipped = 0
     errors = 0
 
@@ -44,6 +56,12 @@ async def collect_financials(
                 stock.sector = str(info["sector"])[:100]
             if not stock.industry and info.get("industry"):
                 stock.industry = str(info["industry"])[:100]
+
+            # 분기 손익계산서 — 최신 분기가 오래됐을 때만 받는다(별도 API 호출이라 비싸다).
+            # ⚠️ period_end 는 회계 분기 종료일이지 공시일이 아니다. 쓰는 쪽에서 공시 지연을 적용할 것.
+            last_q = latest_q.get(stock.id)
+            if last_q is None or last_q < stale_before:
+                quarters_saved += await _upsert_quarterly(db, stock.id, ticker)
 
             roe = safe_float(info.get("returnOnEquity"))
             per = safe_float(info.get("trailingPE"))
@@ -131,7 +149,57 @@ async def collect_financials(
 
     await db.commit()
     logger.info(f"Financial batch [offset={offset} limit={limit}]: {collected} collected, {skipped} skipped, {errors} errors")
-    return {"collected": collected, "skipped": skipped, "errors": errors, "total_in_batch": len(stocks)}
+    return {"collected": collected, "skipped": skipped, "errors": errors,
+            "quarters_saved": quarters_saved, "total_in_batch": len(stocks)}
+
+
+async def _upsert_quarterly(db: AsyncSession, stock_id: int, ticker) -> int:
+    """분기 손익계산서를 quarterly_financials 에 upsert. 저장한 분기 수를 반환."""
+    try:
+        q = ticker.quarterly_income_stmt
+    except Exception as e:
+        logger.debug(f"quarterly_income_stmt 실패 (stock {stock_id}): {e}")
+        return 0
+    if q is None or getattr(q, "empty", True):
+        return 0
+
+    def row_map(keys):
+        row = next((k for k in keys if k in q.index), None)
+        if row is None:
+            return {}
+        out = {}
+        for col in q.columns:
+            v = safe_amount(q.loc[row][col])
+            if v is not None:
+                out[col] = v
+        return out
+
+    rev, opi, net = row_map(Q_REVENUE_KEYS), row_map(Q_OP_INCOME_KEYS), row_map(Q_NET_INCOME_KEYS)
+    periods = set(rev) | set(opi) | set(net)
+    saved = 0
+    for col in periods:
+        try:
+            period_end = col.date() if hasattr(col, "date") else col
+        except Exception:
+            continue
+        existing = await db.execute(
+            select(QuarterlyFinancials).where(
+                QuarterlyFinancials.stock_id == stock_id,
+                QuarterlyFinancials.period_end == period_end,
+            )
+        )
+        qf = existing.scalar_one_or_none()
+        if qf:
+            qf.revenue = rev.get(col)
+            qf.operating_income = opi.get(col)
+            qf.net_income = net.get(col)
+        else:
+            db.add(QuarterlyFinancials(
+                stock_id=stock_id, period_end=period_end,
+                revenue=rev.get(col), operating_income=opi.get(col), net_income=net.get(col),
+            ))
+        saved += 1
+    return saved
 
 
 def _fetch_equity(ticker) -> float | None:

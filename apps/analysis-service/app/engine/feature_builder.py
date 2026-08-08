@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
-from app.models.db_models import Stock, PriceDaily, FinancialMetrics, NewsArticle, NewsStockRelation, MacroIndicator
+from app.models.db_models import Stock, PriceDaily, FinancialMetrics, NewsArticle, NewsStockRelation, MacroIndicator, QuarterlyFinancials
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,34 @@ def _build_news_features(news_rows: list) -> dict:
     }
 
 
+
+# ── 분기 실적 성장률 ────────────────────────────────────────────────────────
+# 공시 지연: 분기 종료일과 공시일은 다르다. 2026-03-31 분기는 5월 중순에나 공시되므로
+# 그 이전 시점의 채점에 쓰면 미래 정보가 샌다. KR 분기보고서 법정기한 45일 + 여유 = 60일.
+REPORT_LAG_DAYS = 60
+YOY_TOLERANCE_DAYS = 45     # 1년 전 분기 매칭 허용 오차
+
+
+def _yoy_growth(series: list[tuple], as_of) -> Optional[float]:
+    """(분기말, 값) 목록에서 공시 지연 후 알 수 있는 최신 분기의 YoY 성장률."""
+    if not series:
+        return None
+    usable = [(d, v) for d, v in series if v is not None
+              and d + timedelta(days=REPORT_LAG_DAYS) <= as_of]
+    if not usable:
+        return None
+    cur_d, cur_v = usable[-1]
+    target = cur_d - timedelta(days=365)
+    prev = min(((d, v) for d, v in series if v is not None),
+               key=lambda x: abs((x[0] - target).days), default=None)
+    if prev is None or abs((prev[0] - target).days) > YOY_TOLERANCE_DAYS:
+        return None
+    if prev[1] <= 0:        # 적자·0 기준 성장률은 의미가 없다
+        return None
+    g = (cur_v - prev[1]) / prev[1]
+    return round(g, 4) if abs(g) < 10 else None      # 1000% 초과는 기저효과 노이즈
+
+
 async def build_features(db: AsyncSession, stock: Stock, market_code: str = "US") -> Optional[dict]:
     try:
         since = (datetime.utcnow() - timedelta(days=90)).date()
@@ -227,9 +255,25 @@ async def build_features(db: AsyncSession, stock: Stock, market_code: str = "US"
         )
         fin = fin_result.scalar_one_or_none()
 
+        # 분기 실적 성장률 — 스코어링에는 아직 안 쓰지만 스냅샷에 남겨
+        # 나중에 저장된 스냅샷만으로 검증할 수 있게 한다.
+        q_result = await db.execute(
+            select(QuarterlyFinancials.period_end,
+                   QuarterlyFinancials.revenue,
+                   QuarterlyFinancials.operating_income)
+            .where(QuarterlyFinancials.stock_id == stock.id)
+            .order_by(QuarterlyFinancials.period_end)
+        )
+        q_rows = q_result.all()
+        as_of = datetime.utcnow().date()
+        rev_series = [(r.period_end, _f(r.revenue)) for r in q_rows]
+        opi_series = [(r.period_end, _f(r.operating_income)) for r in q_rows]
+
         fundamental = {
             "roe": _f(fin.roe) if fin else None,
-            "operating_income_growth": None,
+            "operating_income_growth": _yoy_growth(opi_series, as_of),
+            "revenue_growth_yoy": _yoy_growth(rev_series, as_of),
+            "debt_ratio": _f(fin.debt_ratio) if fin else None,
             "per_relative": _f(fin.per) if fin else None,
             "pbr_relative": _f(fin.pbr) if fin else None,
         }

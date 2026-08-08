@@ -31,6 +31,7 @@ model Stock {
   market              Market               @relation(fields: [marketId], references: [id])
   prices              PriceDaily[]
   financials          FinancialMetrics[]
+  quarterlyFinancials QuarterlyFinancials[]
   newsRelations       NewsStockRelation[]
   recommendations     Recommendation[]
   alertSubscriptions  AlertSubscription[]
@@ -111,6 +112,22 @@ model FinancialMetrics {
 
   @@unique([stockId, periodType, periodEnd], map: "financial_metrics_stock_id_period_type_period_end_key")
   @@map("financial_metrics")
+}
+
+model QuarterlyFinancials {
+  id              Int      @id @default(autoincrement())
+  stockId         Int      @map("stock_id")
+  periodEnd       DateTime @map("period_end") @db.Date
+  revenue         Decimal? @db.Decimal(20, 2)
+  operatingIncome Decimal? @map("operating_income") @db.Decimal(20, 2)
+  netIncome       Decimal? @map("net_income") @db.Decimal(20, 2)
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, periodEnd], map: "quarterly_financials_stock_id_period_end_key")
+  @@index([stockId, periodEnd(sort: Desc)])
+  @@map("quarterly_financials")
 }
 
 model NewsArticle {

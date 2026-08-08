@@ -69,6 +69,24 @@ class FinancialMetrics(Base):
 
     stock = relationship("Stock", back_populates="financials")
 
+
+class QuarterlyFinancials(Base):
+    """분기 손익계산서 — financial_metrics 와 섞지 않는다.
+
+    그쪽은 여러 곳이 period_type 필터 없이 '가장 최근 period_end' 를 집어가서,
+    분기말(6/30)이 연간 스냅샷(6/01)보다 뒤면 roe/per/pbr 이 NULL 인 행이 선택된다.
+
+    ⚠️ period_end 는 회계 분기 종료일이지 공시일이 아니다 — 쓸 때 공시 지연을 적용할 것.
+    """
+    __tablename__ = "quarterly_financials"
+    id = Column(Integer, primary_key=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), nullable=False)
+    period_end = Column(Date, nullable=False)
+    revenue = Column(Numeric(20, 2))
+    operating_income = Column(Numeric(20, 2))
+    net_income = Column(Numeric(20, 2))
+
+
     __table_args__ = (UniqueConstraint("stock_id", "period_type", "period_end"),)
 
 
