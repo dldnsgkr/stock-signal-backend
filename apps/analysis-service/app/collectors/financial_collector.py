@@ -35,6 +35,16 @@ async def collect_financials(
             ticker = yf.Ticker(stock.symbol)
             info = ticker.info or {}
 
+            # 섹터·업종은 종목 목록 수집기(SEC EDGAR / FinanceDataReader)가 주지 않아
+            # `stocks.sector` 가 US 0.9% / KR 1.3% 만 채워져 있었다 — `/sectors` 섹터 분석과
+            # 성과 리포트의 섹터별 집계가 사실상 1% 표본으로 돌고 있었다(2026-08-09 발견).
+            # yfinance `info` 에는 들어 있고 여기서 이미 호출하므로 **추가 API 비용 없이** 채운다.
+            # 이미 값이 있으면 덮어쓰지 않는다.
+            if not stock.sector and info.get("sector"):
+                stock.sector = str(info["sector"])[:100]
+            if not stock.industry and info.get("industry"):
+                stock.industry = str(info["industry"])[:100]
+
             roe = safe_float(info.get("returnOnEquity"))
             per = safe_float(info.get("trailingPE"))
             pbr = safe_float(info.get("priceToBook"))
