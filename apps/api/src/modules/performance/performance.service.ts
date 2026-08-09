@@ -309,20 +309,26 @@ export class PerformanceService {
           res.alpha_30d,
           res.hit_7d,
           res.hit_30d,
+          -- ⚠️ r.stock_id tie-break 를 빼지 말 것.
+          -- 점수 양자화가 심해 동점이 흔하다 — KR 최근 90일 BUY 의 **80.8%** 가 동점에 속하고,
+          -- rank 5 경계에는 평균 **15.94 종목**(최대 35)이 같은 점수로 몰려 있다.
+          -- tie-break 가 없으면 행 순서가 실행마다 달라 Top5 가 동점 16종목 중 5개를
+          -- 매번 다르게 집는다. 2026-08-10 실측: 같은 호출 3회에 Top5 수익률
+          -- -0.77% / -1.24% / -2.58%, 알파는 +1.44% / +0.97% / **-0.36%** 로 부호까지 뒤집혔다.
           ROW_NUMBER() OVER (
             PARTITION BY r.recommendation_run_id
-            ORDER BY r.score DESC
+            ORDER BY r.score DESC, r.stock_id
           ) AS score_rank
         FROM recommendations r
         JOIN recommendation_runs rr  ON rr.id  = r.recommendation_run_id
         JOIN stocks s                ON s.id   = r.stock_id
-        JOIN recommendation_results res ON res.recommendation_id = r.id
+        -- ⚠️ LEFT JOIN 이어야 한다. 평가된 것만으로 순위를 매기면 **rank 6 이 5 로 승격**된다
+        -- (상장폐지·가격 공백으로 평가가 빠진 종목이 KR BUY 의 20%). 순위는 추천 시점에
+        -- 모델이 실제로 고른 순서여야 하므로 전체로 매기고, 평균 낼 때 결측을 뺀다.
+        LEFT JOIN recommendation_results res ON res.recommendation_id = r.id
         WHERE rr.market_code = ${market}
           AND rr.executed_at >= ${since}
           AND r.action = 'BUY'
-          -- 어느 한 기간이라도 평가된 추천만. return_7d 만 보면 horizon=30d 에서
-          -- 7일 결측·30일 존재인 희귀 케이스가 누락된다.
-          AND (res.return_7d IS NOT NULL OR res.return_30d IS NOT NULL)
       )
       SELECT * FROM ranked
       ORDER BY run_executed_at DESC, score_rank ASC
@@ -357,8 +363,11 @@ export class PerformanceService {
       if (withReturn.length === 0) return null;
 
       const returns = withReturn.map(p => p.return as number);
-      const benchmarks = withReturn.filter(p => p.benchmark !== null).map(p => p.benchmark as number);
       const hits = withReturn.filter(p => p.hit !== null);
+      // 벤치마크가 있는 건만 따로 모은다. 예전엔 mean(returns) - mean(benchmarks) 였는데
+      // 두 평균의 모집단이 달라(벤치마크 결측분이 수익률 쪽에만 남아) 알파에 결측 편향이 섞였다.
+      // 종목별 (수익률 - 벤치마크) 의 평균으로 계산해 모집단을 일치시킨다.
+      const withBench = withReturn.filter(p => p.benchmark !== null);
 
       const mean = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
       const std = (arr: number[]) => {
@@ -367,8 +376,15 @@ export class PerformanceService {
       };
 
       const portfolioReturn = mean(returns);
-      const benchmarkReturn = benchmarks.length > 0 ? mean(benchmarks) : null;
-      const alpha = benchmarkReturn !== null ? portfolioReturn - benchmarkReturn : null;
+      const benchmarkReturn = withBench.length > 0
+        ? mean(withBench.map(p => p.benchmark as number)) : null;
+      const alpha = withBench.length > 0
+        ? mean(withBench.map(p => (p.return as number) - (p.benchmark as number))) : null;
+      // ⚠️ stdDev 는 **종목 간 횡단면 산포**이지 포트폴리오 변동성이 아니다.
+      // N 종목을 담으면 포트폴리오 변동성은 대략 이 값의 1/√N 이다.
+      // 따라서 아래 비율도 **샤프 지수가 아니다** — 무위험수익률도 연율화도 없다.
+      // 화면 라벨을 여기에 맞춰 두었으니(종목 간 산포 / 수익-산포 비율) 되돌리지 말 것.
+      // 진짜 샤프를 내려면 일별 포트폴리오 시계열이 필요한데, 런이 매일 겹쳐 그게 없다.
       const stdDev = std(returns);
       const sharpe = stdDev > 0 ? portfolioReturn / stdDev : null;
       const hitRate = hits.length > 0 ? hits.filter(p => p.hit).length / hits.length : null;
