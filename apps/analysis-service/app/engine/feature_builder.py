@@ -166,6 +166,7 @@ def _build_news_features(news_rows: list) -> dict:
 # 그 이전 시점의 채점에 쓰면 미래 정보가 샌다. KR 분기보고서 법정기한 45일 + 여유 = 60일.
 REPORT_LAG_DAYS = 60
 YOY_TOLERANCE_DAYS = 45     # 1년 전 분기 매칭 허용 오차
+MACRO_MAX_STALE_DAYS = 7    # 거시지표 신선도 상한 — 장기 연휴를 감안해 가격과 같은 7일
 
 
 def _yoy_growth(series: list[tuple], as_of) -> Optional[float]:
@@ -293,18 +294,27 @@ async def build_features(db: AsyncSession, stock: Stock, market_code: str = "US"
         news_rows = news_result.all()
         news = _build_news_features(news_rows)
 
-        # 거시지표
+        # 거시지표 — 지표별 최신값 (신선도 상한 안에서만).
+        #
+        # 예전엔 `order_by(observed_at desc).limit(20)` 으로 잘라서 앞에 나온 것을 골랐다.
+        # 이 방식은 **지표 종류가 늘어날수록 조회 창이 좁아진다** — 20행이 US 7종류면
+        # 2.8일치뿐이라, 지표를 몇 개만 더 추가하면 VIX 가 창 밖으로 밀려 조용히 None 이 된다.
+        # (CLAUDE.md 의 take/limit 함정. 스코어링 분석이 같은 형태로 항상 0건이었다.)
+        # DISTINCT ON 으로 지표별 최신 1건을 집되, MACRO_MAX_STALE_DAYS 를 넘긴 값은
+        # 애초에 후보에서 뺀다 — 수집이 멈춘 지표가 옛 값으로 조용히 남지 않게.
+        macro_cutoff = as_of - timedelta(days=MACRO_MAX_STALE_DAYS)
         macro_result = await db.execute(
             select(MacroIndicator.indicator_type, MacroIndicator.value)
-            .where(MacroIndicator.market_code == market_code)
-            .order_by(desc(MacroIndicator.observed_at))
-            .limit(20)
+            .where(
+                MacroIndicator.market_code == market_code,
+                MacroIndicator.observed_at >= macro_cutoff,
+            )
+            .order_by(MacroIndicator.indicator_type, desc(MacroIndicator.observed_at))
+            .distinct(MacroIndicator.indicator_type)
         )
-        macro_rows = macro_result.all()
-        macro_map: dict = {}
-        for row in macro_rows:
-            if row.indicator_type not in macro_map:
-                macro_map[row.indicator_type] = _f(row.value)
+        macro_map: dict = {
+            row.indicator_type: _f(row.value) for row in macro_result.all()
+        }
 
         macro = {
             "vix": macro_map.get("VIX"),

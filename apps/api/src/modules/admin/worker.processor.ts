@@ -11,6 +11,20 @@ import { PushService } from '../alert/push.service';
 import { AlertService } from '../alert/alert.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 
+// 벤치마크 = 동일가중 유니버스 지수 (macro_indicators.indicator_type, 시장은 market_code 로 구분).
+//
+// 왜 KOSPI/SP500 지수를 안 쓰는가 — KR 지수 시계열이 구성종목과 앞뒤가 안 맞는다.
+// 2026-08-10 실측: KOSPI 일간 +17.91%(07-31) / −10.84%(07-28), 08-03 에는 KR 종목 2,758개
+// 동일가중 평균(+1.28%)과 **부호까지 반대**(−5.12%)였다. 지수 하나가 구성종목 평균보다
+// 2~3배 출렁이는 건 분산효과상 성립할 수 없다. KODEX 200(069500.KS 일간 최대 24%)·
+// EWY(11.8%) 등 대체 티커도 전부 같아서 **티커 교체로는 못 고친다.**
+// 이 오염된 지수가 alpha_7d/alpha_30d 에 그대로 들어가 KR 임계값 판단을 뒤집어 놓았었다.
+//
+// 동일가중이 옳은 기준이기도 하다 — 우리는 종목을 동일가중으로 고르므로, 선택 능력은
+// 시총가중 지수가 아니라 **같은 날 고를 수 있었던 종목들의 평균** 대비로 재야 한다.
+// US 는 SP500 과 거의 붙으므로(2주 +2.44% vs +4.65%) 구현 검증용 대조로 쓸 수 있다.
+const BENCHMARK_INDICATOR = 'EW_INDEX';
+
 // FastAPI 호출 헬퍼 — 단일 시도, 재시도는 Bull backoff에 위임
 async function callAnalysis(url: string, data: object, timeoutMs = 600000): Promise<any> {
   const res = await axios.post(url, data, { timeout: timeoutMs });
@@ -661,7 +675,7 @@ export class PipelineProcessor {
     }
 
     // 4. 벤치마크 지수 — 없으면 평가 시 알파가 전부 비어버린다
-    const benchmark = market === 'KR' ? 'KOSPI' : 'SP500';
+    const benchmark = BENCHMARK_INDICATOR;
     const bench = await this.prisma.macroIndicator.findFirst({
       where: { marketCode: market, indicatorType: benchmark },
       orderBy: { observedAt: 'desc' },
@@ -820,6 +834,8 @@ export class EvaluationProcessor {
     // id 커서로 끊어 읽는다. stock 관계는 이 루프에서 쓰지 않으므로 include 하지 않는다.
     // 지수는 시장별 수백 행뿐이라 통째로 올려두고 메모리에서 조회한다.
     // (추천 건마다 DB 를 치면 평가 시간이 몇 배로 늘어난다)
+    // 벤치마크는 price_daily 파생이므로 읽기 전에 최신 가격으로 다시 만든다.
+    await this.rebuildBenchmarkIndex();
     const benchmarks = await this.loadBenchmarkSeries();
 
     const BATCH_SIZE = 2000;
@@ -907,25 +923,55 @@ export class EvaluationProcessor {
     return { evaluated, scanned };
   }
 
-  // 시장별 벤치마크 지수. macro_indicators.indicator_type 값과 일치해야 한다.
-  private static readonly BENCHMARK_BY_MARKET: Record<string, string> = {
-    US: 'SP500',
-    KR: 'KOSPI',
-  };
+  // 동일가중 유니버스 지수를 price_daily 에서 다시 만들어 macro_indicators 에 적재한다.
+  // 파생값이라 매번 통째로 다시 만든다 — 가격이 소급 조정돼도 지수가 따라 고쳐진다(1.8초).
+  //
+  // 필터 셋의 의미:
+  //   date - pd <= 10  — 장기 거래정지·수집공백 후 재개분. 그 사이 변동이 하루치로 잡힌다
+  //   abs(ret) <= 0.5  — 데이터 오류 컷. KR 가격제한은 ±30% 라 정상 봉은 안 잘린다
+  //   count(*) >= 50   — 구성종목이 적은 날(휴장 경계 등)은 평균이 못 믿을 값이 된다
+  // ret >= -0.5 가 보장되므로 ln(1+ret) 은 정의역을 벗어나지 않는다.
+  private async rebuildBenchmarkIndex(): Promise<void> {
+    const rows = await this.prisma.$executeRaw`
+      INSERT INTO macro_indicators (market_code, indicator_type, value, observed_at)
+      WITH px AS (
+        SELECT m.code AS mkt, p.date, p.close,
+               lag(p.close) OVER w AS pc, lag(p.date) OVER w AS pd
+        FROM price_daily p
+        JOIN stocks s ON s.id = p.stock_id
+        JOIN markets m ON m.id = s.market_id
+        WINDOW w AS (PARTITION BY p.stock_id ORDER BY p.date)
+      ), r AS (
+        SELECT mkt, date, (close - pc) / pc AS ret
+        FROM px
+        WHERE pc > 0 AND pd IS NOT NULL
+          AND date - pd <= 10
+          AND abs((close - pc) / pc) <= 0.5
+      ), d AS (
+        SELECT mkt, date, avg(ret) AS ret
+        FROM r GROUP BY 1, 2 HAVING count(*) >= 50
+      )
+      -- ::varchar 를 빼지 말 것 — INSERT SELECT 목록의 파라미터는 타입 추론이 안 걸릴 수 있다
+      -- (v3.12.3 의 make_interval(days => bigint) 과 같은 부류)
+      SELECT mkt, ${BENCHMARK_INDICATOR}::varchar,
+             round((1000 * exp(sum(ln(1 + ret)) OVER (PARTITION BY mkt ORDER BY date)))::numeric, 6),
+             date::timestamp
+      FROM d
+      ON CONFLICT (market_code, indicator_type, observed_at)
+      DO UPDATE SET value = EXCLUDED.value
+    `;
+    this.logger.log(`Benchmark index rebuilt: ${rows} rows`);
+  }
 
   private async loadBenchmarkSeries(): Promise<Map<string, { t: number; v: number }[]>> {
     const rows = await this.prisma.macroIndicator.findMany({
-      where: {
-        indicatorType: { in: Object.values(EvaluationProcessor.BENCHMARK_BY_MARKET) },
-      },
-      select: { marketCode: true, indicatorType: true, observedAt: true, value: true },
+      where: { indicatorType: BENCHMARK_INDICATOR },
+      select: { marketCode: true, observedAt: true, value: true },
       orderBy: { observedAt: 'asc' },
     });
 
     const series = new Map<string, { t: number; v: number }[]>();
     for (const r of rows) {
-      // KR 시장에 SP500 이 섞여 들어오는 경우를 배제한다.
-      if (EvaluationProcessor.BENCHMARK_BY_MARKET[r.marketCode] !== r.indicatorType) continue;
       const list = series.get(r.marketCode) ?? [];
       list.push({ t: r.observedAt.getTime(), v: Number(r.value) });
       series.set(r.marketCode, list);
