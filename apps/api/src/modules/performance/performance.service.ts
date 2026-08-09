@@ -358,8 +358,19 @@ export class PerformanceService {
       scoreRank: Number(r.score_rank),
     });
 
+    // 이상치 컷. `price_daily` 는 증분 수집이라 **행마다 조정 시점이 다르다** —
+    // 리버스 스플릿이 나면 그 전에 저장된 행은 소급 재조정되지 않아 시계열에 인위적
+    // 점프가 남는다. 2026-08-10 실측: 진입가 $0.0277·$0.045·$0.049 인 페니주에서
+    // 7일 수익률 14,864% / 14,744% / 10,257% 가 나왔다.
+    // US 90,113 건 중 78 건(0.09%)뿐인데 **전체 BUY 평균의 부호를 뒤집었다**(+0.11% → -0.23%).
+    // 분석 스크립트들이 쓰는 --max-abs-ret 1.0 과 같은 기준을 쓴다.
+    // ⚠️ 조용히 버리지 말 것 — 제외 건수를 응답에 실어 화면에 표시한다.
+    const MAX_ABS_RETURN = 1.0;
+
     const computePortfolio = (positions: ReturnType<typeof toPosition>[]) => {
-      const withReturn = positions.filter(p => p.return !== null);
+      const evaluated = positions.filter(p => p.return !== null);
+      const withReturn = evaluated.filter(p => Math.abs(p.return as number) <= MAX_ABS_RETURN);
+      const excludedOutliers = evaluated.length - withReturn.length;
       if (withReturn.length === 0) return null;
 
       const returns = withReturn.map(p => p.return as number);
@@ -392,6 +403,7 @@ export class PerformanceService {
       const sorted = [...returns].sort((a, b) => a - b);
       return {
         count: withReturn.length,
+        excludedOutliers,
         portfolioReturn: Math.round(portfolioReturn * 10000) / 10000,
         benchmarkReturn: benchmarkReturn !== null ? Math.round(benchmarkReturn * 10000) / 10000 : null,
         alpha: alpha !== null ? Math.round(alpha * 10000) / 10000 : null,
@@ -412,8 +424,11 @@ export class PerformanceService {
     // 상위 종목만 포지션 테이블에 표시 (최대 200개)
     const positions = top20.slice(0, 200);
 
-    // 수익률 분포 (10% 구간)
-    const allReturns = all.map((p: Position) => p.return).filter((r: number | null): r is number => r !== null);
+    // 수익률 분포 (5% 구간). 통계 카드와 같은 이상치 컷을 쓴다 —
+    // 안 그러면 x 축이 +3,400% 까지 늘어나 실제 분포가 한 칸으로 뭉개진다.
+    const allReturns = all
+      .map((p: Position) => p.return)
+      .filter((r: number | null): r is number => r !== null && Math.abs(r) <= MAX_ABS_RETURN);
     const buckets: Record<string, number> = {};
     for (const r of allReturns) {
       const bucket = Math.floor(r * 100 / 5) * 5; // 5% 단위
