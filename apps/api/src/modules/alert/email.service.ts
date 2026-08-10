@@ -78,8 +78,8 @@ export class EmailService {
           <div style="font-size:11px;color:#94a3b8;font-family:monospace">${scoreBar}</div>
         </div>
         <div>
-          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">신뢰도</div>
-          <div style="font-size:28px;font-weight:700;color:#059669">${payload.confidence}%</div>
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">전략 일치도</div>
+          <div style="font-size:28px;font-weight:700;color:#059669">${payload.confidence}</div>
         </div>
         <div>
           <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">진입가</div>

@@ -341,7 +341,9 @@ export class RecommendationProcessor {
       if (buyRecs.length > 0) {
         const top = buyRecs[0];
         const bTitle = `📈 ${market} 매수 시그널 ${buyRecs.length}건`;
-        const bBody = `최고 점수: ${top.symbol} ${Number(top.score).toFixed(1)}점 (신뢰도 ${top.confidence}%)`;
+        // '신뢰도 XX%' 로 쓰지 말 것 — 적중 확률이 아닌데 % 가 확률로 읽힌다.
+        // 화면 카드는 2026-08-08 에 '전략 일치도' 로 바꿨는데 알림 본문만 남아 있었다.
+        const bBody = `최고 점수: ${top.symbol} ${Number(top.score).toFixed(1)}점 (전략 일치도 ${top.confidence})`;
         const bUrl = `/recommendations?market=${market}&action=BUY`;
         this.push.sendToAll({ title: bTitle, body: bBody, url: bUrl, tag: `buy-signals-${market}` })
           .catch(e => this.logger.error(`BUY push failed: ${e}`));
