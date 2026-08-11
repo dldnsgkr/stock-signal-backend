@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, date, timedelta
 import yfinance as yf
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 from app.models.db_models import Stock, Market, FinancialMetrics, QuarterlyFinancials
 from app.collectors.financial_math import (
     PBR_MAX, PER_MAX, derive_ratio, extract_equity, safe_amount, safe_float,
@@ -26,17 +26,42 @@ async def collect_financials(
     offset: int = 0,
     limit: int = 200,
 ) -> dict:
+    stale_before = date.today() - timedelta(days=QUARTERLY_REFRESH_DAYS)
+
+    # ⚠️ ORDER BY 를 빼지 말 것.
+    # 정렬 없는 offset/limit 는 Postgres 가 행 순서를 보장하지 않아, 런마다 **다른
+    # 부분집합**을 잡는다. 워커는 매 런 offset 0 부터 FINANCIAL_MAX_STOCKS(2,000)개만
+    # 처리하므로, 유니버스가 그보다 크면 커버리지가 '쿠폰 수집' 처럼 차오르고
+    # **완주가 보장되지 않는다.** 2026-08-11 실측: US 7,434 종목 중 1런 후 24.8%
+    # (무작위 모델 예측 26.9% 와 일치). 그 속도면 99% 까지 15런(약 2주)이 걸린다.
+    #
+    # 분기 데이터가 없거나 오래된 종목을 **먼저** 배치하면 매 런이 미수집분 2,000개를
+    # 새로 채워 US 는 4런이면 끝난다. 같은 순위 안에서는 id 로 결정적으로 끊는다.
+    q_latest = (
+        select(
+            QuarterlyFinancials.stock_id.label("stock_id"),
+            func.max(QuarterlyFinancials.period_end).label("last_q"),
+        )
+        .group_by(QuarterlyFinancials.stock_id)
+        .subquery()
+    )
+    needs_quarterly = case(
+        (q_latest.c.last_q.is_(None), 0),
+        (q_latest.c.last_q < stale_before, 0),
+        else_=1,
+    )
     result = await db.execute(
         select(Stock)
         .join(Market)
+        .outerjoin(q_latest, q_latest.c.stock_id == Stock.id)
         .where(Market.code == market_code, Stock.is_active == True)
+        .order_by(needs_quarterly, Stock.id)
         .offset(offset)
         .limit(limit)
     )
     stocks = result.scalars().all()
 
     # 종목마다 쿼리하면 배치당 수백 번이 되므로 한 번에 읽는다.
-    stale_before = date.today() - timedelta(days=QUARTERLY_REFRESH_DAYS)
     latest_q: dict[int, date] = {}
     if stocks:
         q_rows = await db.execute(
