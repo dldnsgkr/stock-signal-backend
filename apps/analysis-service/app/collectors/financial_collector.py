@@ -27,39 +27,50 @@ async def collect_financials(
     limit: int = 200,
 ) -> dict:
     stale_before = date.today() - timedelta(days=QUARTERLY_REFRESH_DAYS)
+    this_month = date.today().replace(day=1)
 
-    # ⚠️ ORDER BY 를 빼지 말 것.
-    # 정렬 없는 offset/limit 는 Postgres 가 행 순서를 보장하지 않아, 런마다 **다른
-    # 부분집합**을 잡는다. 워커는 매 런 offset 0 부터 FINANCIAL_MAX_STOCKS(2,000)개만
-    # 처리하므로, 유니버스가 그보다 크면 커버리지가 '쿠폰 수집' 처럼 차오르고
-    # **완주가 보장되지 않는다.** 2026-08-11 실측: US 7,434 종목 중 1런 후 24.8%
-    # (무작위 모델 예측 26.9% 와 일치). 그 속도면 99% 까지 15런(약 2주)이 걸린다.
+    # ⚠️ 정렬 기준은 '분기 데이터 보유' 가 아니라 **이번 달 시도 여부** 다.
     #
-    # 분기 데이터가 없거나 오래된 종목을 **먼저** 배치하면 매 런이 미수집분 2,000개를
-    # 새로 채워 US 는 4런이면 끝난다. 같은 순위 안에서는 id 로 결정적으로 끊는다.
-    q_latest = (
-        select(
-            QuarterlyFinancials.stock_id.label("stock_id"),
-            func.max(QuarterlyFinancials.period_end).label("last_q"),
-        )
-        .group_by(QuarterlyFinancials.stock_id)
+    # v3.15.4 는 분기 미보유를 앞에 뒀는데 두 가지가 깨졌다(2026-08-16 실측):
+    #   1) 워커가 한 런 안에서 offset 0,200,400... 으로 도는데, 앞 배치가 수집을
+    #      끝내면 그 종목이 뒤로 밀려 **뒤 종목이 앞으로 당겨진다** → offset=200 이
+    #      방금 당겨온 종목을 건너뛴다. 매 런 절반쯤 흘렸다(US 2,768종목 미시도).
+    #   2) yfinance 에 분기 데이터가 아예 없는 종목(US 491개)은 아무리 받아도
+    #      '미보유' 라 **영원히 앞에 남는다** → offset 을 0 으로 고정하면 그 자리에 갇힌다.
+    #
+    # 그래서 "이번 달에 financial_metrics 를 쓴 적 있는가" 로 나눈다. 분기 데이터가
+    # 없는 종목도 한 번 시도하면 뒤로 가므로 갇히지 않고, 다음 달이면 다시 앞에 온다.
+    # 워커는 offset 을 0 으로 고정하고 pending 이 0 이 되면 멈춘다.
+    attempted = (
+        select(FinancialMetrics.stock_id.label("stock_id"))
+        .where(FinancialMetrics.period_end == this_month)
+        .distinct()
         .subquery()
     )
-    needs_quarterly = case(
-        (q_latest.c.last_q.is_(None), 0),
-        (q_latest.c.last_q < stale_before, 0),
-        else_=1,
-    )
+    tried_this_month = case((attempted.c.stock_id.is_(None), 0), else_=1)
     result = await db.execute(
         select(Stock)
         .join(Market)
-        .outerjoin(q_latest, q_latest.c.stock_id == Stock.id)
+        .outerjoin(attempted, attempted.c.stock_id == Stock.id)
         .where(Market.code == market_code, Stock.is_active == True)
-        .order_by(needs_quarterly, Stock.id)
+        .order_by(tried_this_month, Stock.id)
         .offset(offset)
         .limit(limit)
     )
     stocks = result.scalars().all()
+
+    # 이번 달에 아직 손대지 않은 종목이 몇 개인가 — 워커가 이 값으로 루프를 멈춘다.
+    # (0 이면 이번 달 전수를 한 바퀴 돈 것이다)
+    pending = 0
+    if stocks:
+        tried_rows = await db.execute(
+            select(FinancialMetrics.stock_id)
+            .where(FinancialMetrics.period_end == this_month,
+                   FinancialMetrics.stock_id.in_([s.id for s in stocks]))
+            .distinct()
+        )
+        tried_ids = {r[0] for r in tried_rows.all()}
+        pending = sum(1 for s in stocks if s.id not in tried_ids)
 
     # 종목마다 쿼리하면 배치당 수백 번이 되므로 한 번에 읽는다.
     latest_q: dict[int, date] = {}
@@ -184,7 +195,8 @@ async def collect_financials(
     await db.commit()
     logger.info(f"Financial batch [offset={offset} limit={limit}]: {collected} collected, {skipped} skipped, {errors} errors")
     return {"collected": collected, "skipped": skipped, "errors": errors,
-            "quarters_saved": quarters_saved, "total_in_batch": len(stocks)}
+            "quarters_saved": quarters_saved, "total_in_batch": len(stocks),
+            "pending": pending}
 
 
 async def _upsert_quarterly(db: AsyncSession, stock_id: int, ticker) -> int:

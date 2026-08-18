@@ -185,19 +185,29 @@ export class FinancialProcessor {
     const total = await this.prisma.stock.count({ where: { market: { code: market }, isActive: true } });
     const cap = Math.min(total, FINANCIAL_MAX_STOCKS);
     this.logger.log(`Financials: ${total} total, cap at ${cap}`);
-    let offset = 0;
     let totalCollected = 0;
+    let processed = 0;
     try {
-      while (offset < cap) {
-        await safeProgress(job, Math.round((offset / cap) * 100));
-        const data = await callAnalysis(`${analysisUrl}/collect/financials`, { market, offset, limit: FINANCIAL_BATCH });
+      // ⚠️ offset 을 증가시키지 말 것 (v3.15.4 회귀).
+      // 수집기가 '이번 달 미시도' 를 앞에 놓으므로, 한 배치를 처리하면 그 종목들이
+      // 뒤로 밀리고 다음 미시도 종목이 앞으로 온다. 여기서 offset 을 올리면 방금
+      // 당겨온 종목을 건너뛴다 — US 7,462 중 2,768 종목이 한 달 내내 미시도로 남았다.
+      // 대신 pending(이번 달 미시도 수)이 0 이 되면 한 바퀴 돈 것이므로 멈춘다.
+      while (processed < cap) {
+        await safeProgress(job, Math.round((processed / cap) * 100));
+        const data = await callAnalysis(`${analysisUrl}/collect/financials`, { market, offset: 0, limit: FINANCIAL_BATCH });
         totalCollected += data.collected ?? 0;
-        this.logger.log(`Financial batch offset=${offset}: ${JSON.stringify(data)}`);
-        offset += FINANCIAL_BATCH;
+        this.logger.log(`Financial batch ${processed}/${cap}: ${JSON.stringify(data)}`);
+        processed += FINANCIAL_BATCH;
         if ((data.total_in_batch ?? 0) === 0) break;
+        // 이번 달 전수를 한 바퀴 돌았다 — 더 돌면 같은 종목을 다시 받는다
+        if ((data.pending ?? 0) === 0) {
+          this.logger.log(`Financials: 이번 달 전수 완료 (${market})`);
+          break;
+        }
       }
     } catch (err) {
-      throwForRetryPolicy(err, `collect-financials/${market} offset=${offset}`);
+      throwForRetryPolicy(err, `collect-financials/${market} processed=${processed}`);
     }
     await safeProgress(job, 100);
     this.logger.log(`Financial collection done for ${market}: ${totalCollected} collected`);
