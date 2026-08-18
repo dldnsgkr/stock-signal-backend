@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asyncpg  # noqa: E402
 
 from _common import Acc, add_common_args, parse_dates, report, resolve_dsn, select  # noqa: E402
+from _common import Verifier, add_scorer_arg, scorer_arm  # noqa: E402
 from app.engine import scorer  # noqa: E402
 
 QUARTERLY_PATH = "/tmp/quarterly.json"
@@ -108,7 +109,7 @@ RUNS_SQL = """
 """
 
 ROWS_SQL = """
-    SELECT r.stock_id, r.feature_snapshot_json,
+    SELECT r.stock_id, r.score AS stored_score, r.feature_snapshot_json,
            res.{ret_col} AS ret, res.{alpha_col} AS alpha
     FROM recommendations r
     JOIN recommendation_results res ON res.recommendation_id = r.id
@@ -140,6 +141,7 @@ async def main():
                     help="성장률을 데이터 품질에 포함 (가치 가중치가 올라간다)")
     ap.add_argument("--band-off", action="store_true",
                     help="점수 밴드를 끄고 품질만 반영 — '성장 신호' 와 '가중치 상승' 을 분리한다")
+    add_scorer_arg(ap)
     args = ap.parse_args()
 
     global COUNT_QUALITY, BAND_OFF
@@ -151,6 +153,9 @@ async def main():
     alpha_col = f"alpha_{args.horizon}"
     dsn = resolve_dsn(args.dsn, os.environ)
     d_from, d_to = parse_dates(args.fromdate, args.todate)
+
+    use_v20 = args.scorer == "v20"
+    verifier = Verifier()
 
     conn = await asyncpg.connect(dsn)
     try:
@@ -203,7 +208,9 @@ async def main():
                 try:
                     snapshot = rec["feature_snapshot_json"]
                     feat = json.loads(snapshot) if isinstance(snapshot, str) else snapshot
-                    s_cur = scorer.calculate_total_score(feat)["total_score"]
+                    with scorer_arm(use_v20):
+                        s_cur = scorer.calculate_total_score(feat)["total_score"]
+                    verifier.check(rec["stored_score"], s_cur)
 
                     g = None
                     if sid in rev_by_stock:
@@ -216,7 +223,8 @@ async def main():
                         run_have += 1
                     try:
                         with growth_aware_value_score():
-                            s_inj = scorer.calculate_total_score(feat)["total_score"]
+                            with scorer_arm(use_v20):
+                                s_inj = scorer.calculate_total_score(feat)["total_score"]
                     finally:
                         fund["revenue_growth_yoy"] = original
                 except Exception:
@@ -260,7 +268,9 @@ async def main():
         f"채점 {n_rows:,}건 · 성장률 계산된 건 {n_have_debt:,} · 이상치 {n_outliers:,} · 오류 {n_skipped:,}",
         f"밴드: {PEAK_LO:+.0%}~{PEAK_HI:+.0%} → {PEAK_BONUS:+.0f} / <{BAD_LO:+.0%} 또는 >={BAD_HI:+.0%} → "
         f"{EXTREME_PENALTY:+.0f} / 그 사이 0 · 공시지연 {LAG_DAYS}일",
+        f"스코어러 arm: {args.scorer}",
     ]
+    meta += verifier.lines()
     report(f"매출 성장률 반영 반사실 검증 — {args.market} / {args.horizon} / 선택규칙 {sel}",
            meta, cur, inj, both, only_cur, only_inj, overlap, per_run)
 

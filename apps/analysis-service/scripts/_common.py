@@ -7,6 +7,7 @@
 """
 
 import sys
+from contextlib import contextmanager
 from datetime import date
 
 
@@ -136,3 +137,76 @@ def report(title, meta_lines, arm_a, arm_b, both, only_a, only_b, overlap, per_r
               f"{n_a:>7,} {f_a:>9} {n_b:>7,} {f_b:>9}")
     print("=" * width)
     print()
+
+
+# ── 스코어러 arm + 자기검증 ────────────────────────────────────────────────
+#
+# 저장된 점수는 **그때 배포돼 있던 스코어러**가 만든 것이라, 현재 코드로 옛 구간을
+# 재채점하면 어긋난다. 2026-08-10 실측 재현율(US):
+#     06월 이전   0.9~79.6%  → 무엇으로도 재현 안 됨, 버린다
+#     07-01~07-26 100%       → v2.0 동결 사본 (--scorer v20)
+#     07-27~      100%       → 현재 코드      (KR 은 07-28~, 07-27 런은 배포 전 실행)
+# 두 구간이 그대로 3단계(기간 분리)가 된다.
+
+WINDOWS = {
+    "A": ("v20", "2026-07-01", "2026-07-26"),   # v2.0 구간
+    "US_B": ("current", "2026-07-27", None),    # v2.1 구간 (US)
+    "KR_B": ("current", "2026-07-28", None),    # v2.1 구간 (KR — 07-27 런은 배포 전)
+}
+
+
+def add_scorer_arg(ap):
+    ap.add_argument("--scorer", choices=["current", "v20"], default="current",
+                    help="v20 = 2026-07-26 이전 구간(그때는 v2.0 으로 채점돼 있다)")
+    return ap
+
+
+@contextmanager
+def scorer_arm(use_v20: bool):
+    """블록 안에서만 `_momentum_score` 를 v2.0 동결 사본으로 바꾼다."""
+    if not use_v20:
+        yield
+        return
+    from app.engine import scorer
+    from scorer_v20_frozen import momentum_score_v20
+    original = scorer._momentum_score
+    scorer._momentum_score = momentum_score_v20
+    try:
+        yield
+    finally:
+        scorer._momentum_score = original
+
+
+class Verifier:
+    """재채점값이 저장된 점수를 재현하는지 센다.
+
+    **결과를 믿기 전에 반드시 확인할 것** — 스코어러가 바뀐 구간을 잘못 잡으면
+    조용히 틀린 답이 나온다. 95% 미만이면 그 실행은 버린다.
+    """
+
+    def __init__(self, tol: float = 0.011):
+        self.tol = tol
+        self.ok = 0
+        self.n = 0
+
+    def check(self, stored, rescored):
+        if stored is None:
+            return
+        self.n += 1
+        if abs(float(stored) - rescored) < self.tol:
+            self.ok += 1
+
+    @property
+    def rate(self):
+        return self.ok / self.n * 100 if self.n else 0.0
+
+    def lines(self):
+        # 표본 0 을 '재현율 0%' 로 쓰면 안 된다 — 원인이 전혀 다르다.
+        # (모집단 필터가 전부 걸러낸 경우가 있다. KR 가치 스윕을 7월 구간에 돌리면
+        #  그때는 PER/PBR 이 아예 없어서 0건이 되는데, 이건 재현 실패가 아니다.)
+        if self.n == 0:
+            return ["⚠️ 자기검증 불가 — 대조할 행이 0건이다 (모집단 필터·기간 확인)"]
+        out = [f"자기검증: 재채점이 저장 점수를 재현 {self.rate:.1f}% ({self.ok:,}/{self.n:,})"]
+        if self.rate < 95:
+            out.append("⚠️ 자기검증 실패 — 이 결과는 쓰지 말 것 (구간/스코어러 확인)")
+        return out

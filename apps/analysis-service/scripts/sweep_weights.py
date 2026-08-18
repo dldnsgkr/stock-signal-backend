@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asyncpg  # noqa: E402
 
 from _common import Acc, parse_dates, resolve_dsn  # noqa: E402
+from _common import Verifier, add_scorer_arg, scorer_arm  # noqa: E402
 from app.engine import scorer  # noqa: E402
 
 # (모멘텀, 가치, 감성)
@@ -75,7 +76,7 @@ RUNS_SQL = """
 """
 
 ROWS_SQL = """
-    SELECT r.stock_id, r.feature_snapshot_json,
+    SELECT r.stock_id, r.score AS stored_score, r.feature_snapshot_json,
            res.{ret_col} AS ret, res.{alpha_col} AS alpha
     FROM recommendations r
     JOIN recommendation_results res ON res.recommendation_id = r.id
@@ -98,6 +99,7 @@ async def main():
     ap.add_argument("--threshold", type=float, default=None)
     ap.add_argument("--max-abs-ret", type=float, default=1.0)
     ap.add_argument("--dsn", default=None)
+    add_scorer_arg(ap)
     ap.add_argument("--require-value", dest="require_value", action="store_true", default=True,
                     help="가치 데이터가 있는 종목으로 모집단을 고정 (기본)")
     ap.add_argument("--no-require-value", dest="require_value", action="store_false",
@@ -112,6 +114,9 @@ async def main():
 
     accs = {w: Acc(f"{w[0]*100:.0f}/{w[1]*100:.0f}/{w[2]*100:.0f}") for w in GRID}
     n_rows = n_skipped = n_outliers = n_filtered = 0
+
+    use_v20 = args.scorer == "v20"
+    verifier = Verifier()
 
     conn = await asyncpg.connect(dsn)
     try:
@@ -136,6 +141,12 @@ async def main():
                     if args.require_value and not has_value_data(feat):
                         n_filtered += 1
                         continue
+                    # 자기검증 — 배포 가중치로 채점하면 저장 점수가 재현돼야 한다.
+                    # (스윕값이 아니라 **현행 설정**으로 재는 것이 요점이다)
+                    with scorer_arm(use_v20):
+                        s_base = scorer.calculate_total_score(feat)["total_score"]
+                    verifier.check(rec["stored_score"], s_base)
+
                     # 한 행을 한 번만 읽고 모든 가중치로 채점한다 (DB 재조회 없음)
                     for w in GRID:
                         base = {"momentum": w[0], "value": w[1], "sentiment": w[2]}
@@ -143,7 +154,8 @@ async def main():
                         if total <= 0:
                             continue
                         base = {k: v / total for k, v in base.items()}
-                        s = scorer.calculate_total_score(feat, base_weights=base)["total_score"]
+                        with scorer_arm(use_v20):
+                            s = scorer.calculate_total_score(feat, base_weights=base)["total_score"]
                         if s >= threshold:
                             accs[w].add(ret_f, alpha_f)
                 except Exception:
@@ -159,6 +171,9 @@ async def main():
     print(f" 가중치 스윕 — {args.market} / {args.horizon} / 임계값 {threshold} / 모집단: {scope}")
     print(f" 런 {len(runs)}개 · 채점 {n_rows:,}건 · 모집단 제외 {n_filtered:,} · "
           f"이상치 {n_outliers:,} · 오류 {n_skipped:,}")
+    print(f" 스코어러 arm: {args.scorer}")
+    for line in verifier.lines():
+        print(f" {line}")
     print("=" * 76)
     base_alpha = accs[GRID[0]].avg_alpha
     print(f" {'모/가/감':<12}{'선택수':>9}{'적중률':>9}{'수익률':>10}{'알파':>10}{'Δ알파':>11}")
