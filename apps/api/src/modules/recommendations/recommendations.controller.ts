@@ -20,6 +20,15 @@ export class RecommendationsController {
     return this.recommendationsService.getLatest(market, action, +page, +pageSize);
   }
 
+  // ⚠️ 'band-stats' 는 파라미터 라우트보다 **앞**에 둔다.
+  // (@Get('stock/:symbol') 류가 먼저 오면 경로가 그쪽으로 먹힌다 — 이 프로젝트에서
+  //  jobs/failures 가 :queue 로 잡혔던 것과 같은 부류)
+  @Get('band-stats')
+  @ApiOperation({ summary: '점수 밴드별 과거 성과 (최근 90일)' })
+  getBandStats(@Query('market') market = 'US') {
+    return this.recommendationsService.getBandStats(market);
+  }
+
   @Get('history')
   @ApiOperation({ summary: '추천 이력 조회' })
   getHistory(
