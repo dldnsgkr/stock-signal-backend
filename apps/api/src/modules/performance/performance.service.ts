@@ -22,32 +22,39 @@ export class PerformanceService {
     // 7일/30일 지표는 성숙 시점이 달라 분모를 각각 센다.
     // (hit_7d 기준 하나로 나누면 30일 미성숙 구간에서 적중률이 0%로 왜곡됨)
     //
-    // ⚠️ 30일 지표는 **창을 30일 더 뒤로 밀어야** 한다.
-    // 기간 필터가 '런 실행일' 기준이라, 창이 30일이면 그 안의 런은 최대 30일 전이고
-    // 30일 성숙에 도달한 건 거의 없다 → 화면이 늘 '-' 로 보인다(2026-08-19 확인:
-    // period=30d 에서 hitRate30d=null, 90d 면 0.5276). 화면 기본값이 30일이라
-    // 사용자에겐 기능이 고장난 것처럼 보였다.
-    const since30 = new Date(since);
-    since30.setDate(since30.getDate() - 30);
+    // ⚠️ 성숙 기간이 필요한 지표는 **창을 그만큼 더 뒤로 밀어야** 한다.
+    //
+    // 기간 필터는 '런 실행일' 기준이다. 창이 H 일인데 지표도 H 일 성숙을 요구하면
+    // 겹치는 구간이 0 에 가까워 **늘 빈다.** 2026-08-19 에 두 곳에서 실제로 겪었다:
+    //   · 성과 리포트 기본(30일) → hitRate30d 가 항상 '-'  (v3.15.7 에서 30일만 고침)
+    //   · 대시보드는 period=7d 를 쓰는데 → hitRate7d/avgReturn7d 가 **항상** '-'
+    //     (API 로 90일을 부르면 53.1% 가 나오는데 화면만 비어 있었다)
+    // 그래서 지표별로 창을 따로 잡는다. 새 지표를 추가할 때도 같은 규칙을 지킬 것.
+    const shift = (base: Date, days: number) => {
+      const d = new Date(base);
+      d.setDate(d.getDate() - days);
+      return d;
+    };
+    const since7 = shift(since, 7);
+    const since30 = shift(since, 30);
     const rows = await this.prisma.$queryRaw<OverviewRow[]>`
       SELECT
         COUNT(*) FILTER (WHERE res.hit_7d IS NOT NULL
-                           AND run.executed_at >= ${since})    AS total7d,
+                           AND run.executed_at >= ${since7})   AS total7d,
         COUNT(*) FILTER (WHERE res.hit_30d IS NOT NULL
                            AND run.executed_at >= ${since30})  AS total30d,
         COUNT(*) FILTER (WHERE res.hit_7d = true
-                           AND run.executed_at >= ${since})    AS hit7d_count,
+                           AND run.executed_at >= ${since7})   AS hit7d_count,
         COUNT(*) FILTER (WHERE res.hit_30d = true
                            AND run.executed_at >= ${since30})  AS hit30d_count,
-        AVG(res.return_7d) FILTER (WHERE run.executed_at >= ${since})    AS avg_return_7d,
+        AVG(res.return_7d) FILTER (WHERE run.executed_at >= ${since7})   AS avg_return_7d,
         AVG(res.return_30d) FILTER (WHERE run.executed_at >= ${since30}) AS avg_return_30d
       FROM recommendation_results res
       JOIN recommendations r      ON r.id   = res.recommendation_id
       JOIN recommendation_runs run ON run.id = r.recommendation_run_id
       WHERE run.market_code   = ${market}
-        AND run.executed_at   >= ${since30}
-        AND r.action          = 'BUY'
-        -- 7일 지표는 원래 창(since)만 쓴다. 아래 FILTER 로 다시 좁힌다.
+        AND run.executed_at   >= ${since30}      -- 가장 넓은 창으로 한 번만 읽고
+        AND r.action          = 'BUY'                -- 지표별 창은 아래 FILTER 로 좁힌다
     `;
 
     const row = rows[0];
