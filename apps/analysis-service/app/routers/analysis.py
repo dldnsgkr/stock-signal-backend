@@ -38,8 +38,11 @@ def _sanitize(obj):
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 logger = logging.getLogger(__name__)
 
-# v2.1: 모멘텀 단기 반전 보정(∩자) — 과열 모멘텀 감점. scorer._momentum_score 참조.
-MODEL_VERSION = "ensemble_v2.1"
+# v2.2: 과열 추격 추가 감점 (20일 모멘텀 >=30%/-25, >=20%/-12, >=15%/-5).
+#       scorer._momentum_score 끝부분 참조. 3단계 검증 통과 후 2026-08-26 배포.
+# ⚠️ 스코어러를 바꾸면 **반드시 여기도 올릴 것.** 버전이 그대로면 성과 비교에서
+#    옛 모델과 새 모델이 한 덩어리로 섞이고, 반사실 재채점의 유효 구간 경계도 잃는다.
+MODEL_VERSION = "ensemble_v2.2"
 
 
 class GenerateSignalsRequest(BaseModel):
