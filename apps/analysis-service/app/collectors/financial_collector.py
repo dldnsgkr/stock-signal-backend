@@ -28,6 +28,8 @@ async def collect_financials(
 ) -> dict:
     stale_before = date.today() - timedelta(days=QUARTERLY_REFRESH_DAYS)
     this_month = date.today().replace(day=1)
+    this_month_ts = datetime.combine(this_month, datetime.min.time())
+    now_ts = datetime.utcnow()
 
     # ⚠️ 정렬 기준은 '분기 데이터 보유' 가 아니라 **이번 달 시도 여부** 다.
     #
@@ -41,17 +43,17 @@ async def collect_financials(
     # 그래서 "이번 달에 financial_metrics 를 쓴 적 있는가" 로 나눈다. 분기 데이터가
     # 없는 종목도 한 번 시도하면 뒤로 가므로 갇히지 않고, 다음 달이면 다시 앞에 온다.
     # 워커는 offset 을 0 으로 고정하고 pending 이 0 이 되면 멈춘다.
-    attempted = (
-        select(FinancialMetrics.stock_id.label("stock_id"))
-        .where(FinancialMetrics.period_end == this_month)
-        .distinct()
-        .subquery()
-    )
-    tried_this_month = case((attempted.c.stock_id.is_(None), 0), else_=1)
+    # ⚠️ '시도함' 표시는 **결과와 무관하게** 남아야 한다.
+    # v3.15.6 은 financial_metrics 행 존재로 판단했는데, yfinance 에 데이터가 없어
+    # skip 된 종목은 행이 안 생겨 **영원히 맨 앞에 남았다.** offset 이 0 고정이라
+    # 같은 200개를 매 배치 다시 받아 한 런(2,000슬롯·약 46분)을 통째로 낭비했다
+    # (2026-08-26 로그: collected:0, skipped:200, pending:200 이 10회 반복).
+    # → 처리한 종목은 성공/실패와 무관하게 `stocks.updated_at` 을 찍어 뒤로 보낸다.
+    tried_this_month = case((Stock.updated_at < this_month_ts, 0),
+                            (Stock.updated_at.is_(None), 0), else_=1)
     result = await db.execute(
         select(Stock)
         .join(Market)
-        .outerjoin(attempted, attempted.c.stock_id == Stock.id)
         .where(Market.code == market_code, Stock.is_active == True)
         .order_by(tried_this_month, Stock.id)
         .offset(offset)
@@ -61,16 +63,10 @@ async def collect_financials(
 
     # 이번 달에 아직 손대지 않은 종목이 몇 개인가 — 워커가 이 값으로 루프를 멈춘다.
     # (0 이면 이번 달 전수를 한 바퀴 돈 것이다)
-    pending = 0
-    if stocks:
-        tried_rows = await db.execute(
-            select(FinancialMetrics.stock_id)
-            .where(FinancialMetrics.period_end == this_month,
-                   FinancialMetrics.stock_id.in_([s.id for s in stocks]))
-            .distinct()
-        )
-        tried_ids = {r[0] for r in tried_rows.all()}
-        pending = sum(1 for s in stocks if s.id not in tried_ids)
+    pending = sum(
+        1 for s in stocks
+        if s.updated_at is None or s.updated_at < this_month_ts
+    )
 
     # 종목마다 쿼리하면 배치당 수백 번이 되므로 한 번에 읽는다.
     latest_q: dict[int, date] = {}
@@ -88,6 +84,11 @@ async def collect_financials(
     errors = 0
 
     for stock in stocks:
+        # ⚠️ 결과와 무관하게 **먼저** 찍는다. 아래에서 skip/에러로 빠져나가도 이 종목은
+        # '이번 달 확인함' 이 되어 다음 배치에서 뒤로 밀린다. 이걸 성공 경로에만 두면
+        # 데이터 없는 종목이 큐 앞에 영원히 남아 런 전체를 낭비한다(v3.15.6 회귀).
+        stock.updated_at = now_ts
+
         try:
             ticker = yf.Ticker(stock.symbol)
             info = ticker.info or {}
@@ -188,7 +189,13 @@ async def collect_financials(
 
         except Exception as e:
             logger.error(f"Error collecting financials for {stock.symbol}: {e}")
+            # ⚠️ 이 rollback 은 **배치 전체**의 미커밋 변경을 되돌린다(기존 동작).
+            # 실측 errors=0 이라 드러난 적은 없지만, 중간에 한 건 터지면 앞선 종목들의
+            # 수집분과 '확인함' 표시가 함께 날아간다. 트랜잭션 구조를 savepoint 로
+            # 바꾸는 게 정석이나 범위가 커서 지금은 두고, 최소한 **이 종목은 다시 찍어**
+            # 큐 앞에 영원히 남지 않게 한다.
             await db.rollback()
+            stock.updated_at = now_ts
             errors += 1
             continue
 
