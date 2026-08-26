@@ -97,7 +97,14 @@ async function dispatchWatchlistPush(
   logger.log(`Watchlist ${action} push: ${sentUsers} user(s) for ${market}`);
 }
 
-const PRICE_BATCH = 300;
+// 배치 크기는 **HTTP 타임아웃(600초) 대비 여유**로 정한다.
+// 300 종목은 정상 속도(0.19초/종목)면 57초지만, yfinance 가 느려지면 그대로 뚫린다 —
+// 2026-08-18~25 에 US 가격 수집이 매일 600초 타임아웃으로 죽어 최근일 커버리지가
+// 7,489 중 540 종목에 그쳤고, 데이터 계약 게이트가 8일간 파이프라인을 막았다.
+// (게이트는 제 역할을 했다. 문제는 수집이 완주하지 못한 것)
+// 100 종목이면 최악(1.35초/종목)에도 135초라 4배 여유가 생긴다. 총 호출 수는 늘지만
+// 배치당 오버헤드는 작다.
+const PRICE_BATCH = 100;
 const NEWS_BATCH = 30;       // 뉴스는 종목당 yfinance HTTP 1건 → 배치 작게
 const FINANCIAL_BATCH = 200;
 
