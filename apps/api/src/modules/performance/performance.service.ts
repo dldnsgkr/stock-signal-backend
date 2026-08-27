@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { costAssumptions, roundTripCostPct } from './trading-cost';
 
 @Injectable()
 export class PerformanceService {
@@ -306,12 +307,14 @@ export class PerformanceService {
       hit_7d: boolean | null;
       hit_30d: boolean | null;
       score_rank: bigint;
+      entry_turnover: string | null;
     };
 
     const rows = await this.prisma.$queryRaw<SimRow[]>`
       WITH ranked AS (
         SELECT
           r.id,
+          r.stock_id,
           s.symbol,
           s.name,
           s.sector,
@@ -350,7 +353,15 @@ export class PerformanceService {
           AND rr.executed_at >= ${since}
           AND r.action = 'BUY'
       )
-      SELECT * FROM ranked
+      -- 진입일 거래대금(종가×거래량) — 비용 후 알파의 슬리피지 구간 판정용.
+      -- LEFT JOIN LATERAL: 가격 행이 없으면 null 로 두고 TS 쪽에서 최저 유동성으로 취급.
+      SELECT ranked.*, (pv.close * pv.volume) AS entry_turnover
+      FROM ranked
+      LEFT JOIN LATERAL (
+        SELECT close, volume FROM price_daily p
+        WHERE p.stock_id = ranked.stock_id AND p.date <= ranked.run_executed_at::date
+        ORDER BY p.date DESC LIMIT 1
+      ) pv ON true
       ORDER BY run_executed_at DESC, score_rank ASC
     `;
 
@@ -376,6 +387,12 @@ export class PerformanceService {
         : (r.alpha_30d != null ? Number(r.alpha_30d) : null),
       hit: isHorizon7d ? r.hit_7d : r.hit_30d,
       scoreRank: Number(r.score_rank),
+      // 왕복 거래비용(가정) — trading-cost.ts 가 단일 출처.
+      // 30d 도 왕복 1회는 같으므로 horizon 무관.
+      costPct: roundTripCostPct(
+        market,
+        r.entry_turnover != null ? Number(r.entry_turnover) : null,
+      ),
     });
 
     // 이상치 컷. `price_daily` 는 증분 수집이라 **행마다 조정 시점이 다르다** —
@@ -411,6 +428,13 @@ export class PerformanceService {
         ? mean(withBench.map(p => p.benchmark as number)) : null;
       const alpha = withBench.length > 0
         ? mean(withBench.map(p => (p.return as number) - (p.benchmark as number))) : null;
+      // 비용 후 — 종목 수익률에서만 왕복 비용을 뺀다(벤치마크는 지수 보유라 비용 0 가정).
+      // 모집단은 비용 전 지표와 각각 동일하게 맞춘다(withReturn / withBench).
+      const netReturn = mean(withReturn.map(p => (p.return as number) - p.costPct));
+      const netAlpha = withBench.length > 0
+        ? mean(withBench.map(p => (p.return as number) - p.costPct - (p.benchmark as number)))
+        : null;
+      const avgCost = mean(withReturn.map(p => p.costPct));
       // ⚠️ stdDev 는 **종목 간 횡단면 산포**이지 포트폴리오 변동성이 아니다.
       // N 종목을 담으면 포트폴리오 변동성은 대략 이 값의 1/√N 이다.
       // 따라서 아래 비율도 **샤프 지수가 아니다** — 무위험수익률도 연율화도 없다.
@@ -427,6 +451,9 @@ export class PerformanceService {
         portfolioReturn: Math.round(portfolioReturn * 10000) / 10000,
         benchmarkReturn: benchmarkReturn !== null ? Math.round(benchmarkReturn * 10000) / 10000 : null,
         alpha: alpha !== null ? Math.round(alpha * 10000) / 10000 : null,
+        netReturn: Math.round(netReturn * 10000) / 10000,
+        netAlpha: netAlpha !== null ? Math.round(netAlpha * 10000) / 10000 : null,
+        avgCost: Math.round(avgCost * 10000) / 10000,
         stdDev: Math.round(stdDev * 10000) / 10000,
         sharpe: sharpe !== null ? Math.round(sharpe * 100) / 100 : null,
         hitRate: hitRate !== null ? Math.round(hitRate * 1000) / 1000 : null,
@@ -472,6 +499,7 @@ export class PerformanceService {
       positions,
       distribution,
       totalRuns: new Set(rows.map((r: SimRow) => r.run_id)).size,
+      costModel: costAssumptions(market),
     };
   }
 }
