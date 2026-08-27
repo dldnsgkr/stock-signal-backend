@@ -148,7 +148,7 @@ async def main():
     dsn = resolve_dsn(args.dsn, os.environ)
     d_from, d_to = parse_dates(args.fromdate, args.todate)
 
-    use_v20 = args.scorer == "v20"
+    arm = args.scorer
     verifier = Verifier()
 
     conn = await asyncpg.connect(dsn)
@@ -197,7 +197,7 @@ async def main():
                 try:
                     snapshot = rec["feature_snapshot_json"]
                     feat = json.loads(snapshot) if isinstance(snapshot, str) else snapshot
-                    with scorer_arm(use_v20):
+                    with scorer_arm(arm):
                         s_cur = scorer.calculate_total_score(feat)["total_score"]
                     verifier.check(rec["stored_score"], s_cur)
 
@@ -212,7 +212,7 @@ async def main():
                         run_have += 1
                     try:
                         with debt_aware_value_score():
-                            with scorer_arm(use_v20):
+                            with scorer_arm(arm):
                                 s_inj = scorer.calculate_total_score(feat)["total_score"]
                     finally:
                         fund["debt_ratio"] = original

@@ -35,6 +35,9 @@ export PYTHONPATH="$PWD:$PWD/scripts"
 
 # 가치 피처가 full 로 실린 첫 런. 위 주석 참조 — 앞당기면 조용히 희석된다.
 VAL_FROM=2026-08-11
+# v2.1 구간의 끝. 2026-08-26 부터는 v2.2(과열 감점)로 채점돼 있어 v21 사본으로는
+# 재현이 안 된다 — 그 뒤 런까지 쓰려면 --scorer current 로 **따로** 돌려야 한다.
+VAL_TO=2026-08-25
 # 기간 이분 경계. 9/1 기준 08-11~08-25 약 11런이라 각 5~6런이 된다.
 SPLIT=2026-08-18
 
@@ -94,22 +97,22 @@ echo "############ 2. 가치 가중치 상향 (핵심 안건) ############"
 echo "  모집단 고정(--require-value)이 기본이다. 대조군은 --no-require-value."
 echo "  구간: $VAL_FROM ~ (가치 피처가 full 로 실린 뒤)"
 hr
-run_sweep "스윕 KR 모집단고정" scripts/sweep_weights.py --market KR --from "$VAL_FROM"
-run_sweep "스윕 KR 대조군" scripts/sweep_weights.py --market KR --from "$VAL_FROM" --no-require-value
+run_sweep "스윕 KR 모집단고정" scripts/sweep_weights.py --market KR --scorer v21 --from "$VAL_FROM" --to "$VAL_TO"
+run_sweep "스윕 KR 대조군" scripts/sweep_weights.py --market KR --scorer v21 --from "$VAL_FROM" --to "$VAL_TO" --no-require-value
 echo
 echo "  3단계 — 기간 이분 (각 5~6런. 얇으면 결론을 미룬다)"
-run_sweep "스윕 KR 전반" scripts/sweep_weights.py --market KR --from "$VAL_FROM" --to "$SPLIT"
-run_sweep "스윕 KR 후반" scripts/sweep_weights.py --market KR --from "$SPLIT"
+run_sweep "스윕 KR 전반" scripts/sweep_weights.py --market KR --scorer v21 --from "$VAL_FROM" --to "$SPLIT"
+run_sweep "스윕 KR 후반" scripts/sweep_weights.py --market KR --scorer v21 --from "$SPLIT" --to "$VAL_TO"
 hr
 
 echo
 echo "############ 3. 가중치를 올리면 검증된 신호가 살아나는가 ############"
 echo "  성장률·부채비율을 현행 가중치와 상향 가중치에서 각각 잰다."
 hr
-run "성장률 KR 현행가중" scripts/counterfactual_growth.py --market KR --from "$VAL_FROM"
-run "성장률 KR 품질반영" scripts/counterfactual_growth.py --market KR --from "$VAL_FROM" --count-quality
-run "부채비율 KR 현행"   scripts/counterfactual_debt.py   --market KR --from "$VAL_FROM"
-run "부채비율 KR 품질반영" scripts/counterfactual_debt.py --market KR --from "$VAL_FROM" --count-quality
+run "성장률 KR 현행가중" scripts/counterfactual_growth.py --market KR --scorer v21 --from "$VAL_FROM" --to "$VAL_TO"
+run "성장률 KR 품질반영" scripts/counterfactual_growth.py --market KR --scorer v21 --from "$VAL_FROM" --to "$VAL_TO" --count-quality
+run "부채비율 KR 현행"   scripts/counterfactual_debt.py   --market KR --scorer v21 --from "$VAL_FROM" --to "$VAL_TO"
+run "부채비율 KR 품질반영" scripts/counterfactual_debt.py --market KR --scorer v21 --from "$VAL_FROM" --to "$VAL_TO" --count-quality
 hr
 
 cat <<'NOTE'

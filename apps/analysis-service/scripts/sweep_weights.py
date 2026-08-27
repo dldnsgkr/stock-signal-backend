@@ -115,7 +115,7 @@ async def main():
     accs = {w: Acc(f"{w[0]*100:.0f}/{w[1]*100:.0f}/{w[2]*100:.0f}") for w in GRID}
     n_rows = n_skipped = n_outliers = n_filtered = 0
 
-    use_v20 = args.scorer == "v20"
+    arm = args.scorer
     verifier = Verifier()
 
     conn = await asyncpg.connect(dsn)
@@ -143,7 +143,7 @@ async def main():
                         continue
                     # 자기검증 — 배포 가중치로 채점하면 저장 점수가 재현돼야 한다.
                     # (스윕값이 아니라 **현행 설정**으로 재는 것이 요점이다)
-                    with scorer_arm(use_v20):
+                    with scorer_arm(arm):
                         s_base = scorer.calculate_total_score(feat)["total_score"]
                     verifier.check(rec["stored_score"], s_base)
 
@@ -154,7 +154,7 @@ async def main():
                         if total <= 0:
                             continue
                         base = {k: v / total for k, v in base.items()}
-                        with scorer_arm(use_v20):
+                        with scorer_arm(arm):
                             s = scorer.calculate_total_score(feat, base_weights=base)["total_score"]
                         if s >= threshold:
                             accs[w].add(ret_f, alpha_f)

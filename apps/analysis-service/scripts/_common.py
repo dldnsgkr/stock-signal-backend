@@ -145,32 +145,48 @@ def report(title, meta_lines, arm_a, arm_b, both, only_a, only_b, overlap, per_r
 # 재채점하면 어긋난다. 2026-08-10 실측 재현율(US):
 #     06월 이전   0.9~79.6%  → 무엇으로도 재현 안 됨, 버린다
 #     07-01~07-26 100%       → v2.0 동결 사본 (--scorer v20)
-#     07-27~      100%       → 현재 코드      (KR 은 07-28~, 07-27 런은 배포 전 실행)
-# 두 구간이 그대로 3단계(기간 분리)가 된다.
+#     07-27~08-25 100%       → v2.1 동결 사본 (--scorer v21, KR 은 07-28~)
+#     08-26~                 → 현재 코드 (v2.2 과열 감점)
+# ⚠️ 2026-08-26 v2.2 배포로 경계가 하나 더 생겼다 — 그 전에는 07-27~ 가
+# 'current' 였다. v2.1 구간을 current 로 재채점하면 과열 감점 때문에 어긋난다.
 
 WINDOWS = {
     "A": ("v20", "2026-07-01", "2026-07-26"),   # v2.0 구간
-    "US_B": ("current", "2026-07-27", None),    # v2.1 구간 (US)
-    "KR_B": ("current", "2026-07-28", None),    # v2.1 구간 (KR — 07-27 런은 배포 전)
+    "US_B": ("v21", "2026-07-27", "2026-08-25"),  # v2.1 구간 (US)
+    "KR_B": ("v21", "2026-07-28", "2026-08-25"),  # v2.1 구간 (KR — 07-27 런은 배포 전)
+    "C": ("current", "2026-08-26", None),       # v2.2 구간
+}
+
+_FROZEN = {
+    "v20": ("scorer_v20_frozen", "momentum_score_v20"),
+    "v21": ("scorer_v21_frozen", "momentum_score_v21"),
 }
 
 
 def add_scorer_arg(ap):
-    ap.add_argument("--scorer", choices=["current", "v20"], default="current",
-                    help="v20 = 2026-07-26 이전 구간(그때는 v2.0 으로 채점돼 있다)")
+    ap.add_argument("--scorer", choices=["current", "v20", "v21"], default="current",
+                    help="구간에 맞출 것 — v20: ~07-26 / v21: 07-27~08-25 / current(v2.2): 08-26~")
     return ap
 
 
 @contextmanager
-def scorer_arm(use_v20: bool):
-    """블록 안에서만 `_momentum_score` 를 v2.0 동결 사본으로 바꾼다."""
-    if not use_v20:
+def scorer_arm(arm):
+    """블록 안에서만 `_momentum_score` 를 해당 버전 동결 사본으로 바꾼다.
+
+    arm: 'current'|'v20'|'v21' (하위호환 — bool 이 오면 True='v20', False='current')
+    """
+    if isinstance(arm, bool):
+        arm = "v20" if arm else "current"
+    if arm == "current":
         yield
         return
+    import importlib
+
     from app.engine import scorer
-    from scorer_v20_frozen import momentum_score_v20
+    mod_name, fn_name = _FROZEN[arm]
+    frozen = getattr(importlib.import_module(mod_name), fn_name)
     original = scorer._momentum_score
-    scorer._momentum_score = momentum_score_v20
+    scorer._momentum_score = frozen
     try:
         yield
     finally:
