@@ -7,6 +7,9 @@ jobs:
   poc:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      KRX_ID: ${{ secrets.KRX_ID }}
+      KRX_PW: ${{ secrets.KRX_PW }}
     steps:
       - uses: actions/setup-python@v5
         with:
@@ -32,10 +35,7 @@ jobs:
           print("YFINANCE_POC_PASS")
           PYEOF
       - name: pykrx 로그인 + 수급 1구간 (KRX secrets 설정 시에만)
-        env:
-          KRX_ID: ${{ secrets.KRX_ID }}
-          KRX_PW: ${{ secrets.KRX_PW }}
-        if: ${{ secrets.KRX_ID != '' }}
+        if: ${{ env.KRX_ID != '' }}
         run: |
           python - <<'PYEOF'
           from pykrx.website.krx.market.core import 투자자별_순매수상위종목
