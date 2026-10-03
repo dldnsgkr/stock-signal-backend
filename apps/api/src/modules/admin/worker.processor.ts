@@ -651,8 +651,16 @@ export class PipelineProcessor {
   // ── P2-11 데이터 계약 검증 ─────────────────────────────────────────────
   // Phase 2(수집) 직후 · Phase 3(추천 생성) 직전에 검사한다.
   // 오염·결측 데이터로 시그널을 만드는 것보다 파이프라인을 세우는 게 낫다.
-  private async validateDataContract(market: string): Promise<string[]> {
+  //
+  // violations(중단)와 warnings(경고 후 진행)를 나눈다 — 기준은 **그 데이터가
+  // 채점·평가에 실제로 들어가는가**다. KR 수급은 점수 미반영 적재 전용인데도
+  // 중단 사유였던 탓에, KRX 로그인 요구 변경(2026-09-15) 하나로 KR 시그널이
+  // 18일간 전면 중단됐다. 보조 데이터는 시그널을 볼모로 잡지 않는다.
+  private async validateDataContract(
+    market: string,
+  ): Promise<{ violations: string[]; warnings: string[] }> {
     const problems: string[] = [];
+    const warnings: string[] = [];
     const dayMs = 86400000;
 
     // 1. 가격 신선도 — 최신 수집일이 4일(주말+휴일 감안) 넘게 오래되면 위반
@@ -705,18 +713,20 @@ export class PipelineProcessor {
       problems.push(`벤치마크(${benchmark}) ${Math.floor((Date.now() - bench.observedAt.getTime()) / dayMs)}일 미갱신`);
     }
 
-    // 5. KR 수급 신선도
+    // 5. KR 수급 신선도 — **경고만.** 수급은 점수 미반영(적재 전용·/flow 표시)이라
+    // 오래돼도 시그널 품질과 무관하다. 중단 사유로 두면 KRX 쪽 변경 하나가
+    // 시그널 전체를 몇 주씩 세운다(2026-09-16~10-02 실제로 그랬다).
     if (market === 'KR') {
       const flow = await this.prisma.investorFlowDaily.findFirst({
         orderBy: { tradeDate: 'desc' },
         select: { tradeDate: true },
       });
       if (flow && Date.now() - flow.tradeDate.getTime() > 5 * dayMs) {
-        problems.push(`수급 데이터 ${Math.floor((Date.now() - flow.tradeDate.getTime()) / dayMs)}일 미갱신`);
+        warnings.push(`수급 데이터 ${Math.floor((Date.now() - flow.tradeDate.getTime()) / dayMs)}일 미갱신`);
       }
     }
 
-    return problems;
+    return { violations: problems, warnings };
   }
 
   private async isDone(queue: Queue, jobId: string): Promise<boolean> {
@@ -786,9 +796,9 @@ export class PipelineProcessor {
     }
     await safeProgress(job, 80);
 
-    // Phase 2.5: 데이터 계약 검증 — 위반 시 시그널 생성 전에 중단
+    // Phase 2.5: 데이터 계약 검증 — 위반 시 시그널 생성 전에 중단, 경고는 알리고 진행
     try { await job.update({ market, currentStep: 'data-contract' }); } catch {}
-    const violations = await this.validateDataContract(market);
+    const { violations, warnings } = await this.validateDataContract(market);
     if (violations.length > 0) {
       await this.alert.send({
         type: 'error',
@@ -797,6 +807,15 @@ export class PipelineProcessor {
         detail: violations.join(' · '),
       });
       throw new Error(`[데이터 계약 위반] ${violations.join(' · ')}`);
+    }
+    if (warnings.length > 0) {
+      await this.alert.send({
+        type: 'warning',
+        title: '데이터 경고 — 시그널은 생성됨',
+        market,
+        detail: warnings.join(' · '),
+      });
+      this.logger.warn(`[Pipeline] Data contract warnings for ${market}: ${warnings.join(' · ')}`);
     }
     this.logger.log(`[Pipeline] Data contract OK for ${market}`);
 
