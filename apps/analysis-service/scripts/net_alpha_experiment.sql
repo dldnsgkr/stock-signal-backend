@@ -23,11 +23,19 @@
 --
 -- 결과 (2026-10-04 실행, 90일)
 -- ------------------------------------------------------------------------
--- **US: 2단계 탈락.** 하한 $10M+임계값65 가 net +0.31%·전후반 양수·슬리피지 2배에도
+-- **US 7d: 2단계 탈락.** 하한 $10M+임계값65 가 net +0.31%·전후반 양수·슬리피지 2배에도
 -- 양수로 "통과처럼 보였으나", dm(유동성 유니버스 내 초과)이 −0.28% — 대형주 유니버스가
 -- EW 지수를 이긴 효과일 뿐, 유니버스 안에서 모델 선택은 평균보다 나빴다.
--- **KR: 1단계부터 전멸.** 12개 조합 전부 net·dm 음수.
+-- **KR 7d: 1단계부터 전멸.** 12개 조합 전부 net·dm 음수.
 -- top-N 집중은 양 시장 모두 임계값보다 나빴다.
+--
+-- 30일 보유 추가 측정 (rcol=return_30d — 회전율을 낮춰 비용 분모를 바꾸는 마지막 레버)
+-- ------------------------------------------------------------------------
+-- KR: 더 깊은 음수로 전멸. US: 하한0+임계값65 가 net/dm/h1/h2/net2x 전부 양수로
+-- "통과"했으나 — **투자 가능한 대안(SP500 매수 후 보유) 대비로 재면 측정된 4개월
+-- 전부 음수다**(전체 BUY −2.35%/월, $10M+top50 −1.85%/월). EW 전종목 지수는 같은
+-- 기간 SPY 에 월 −2~3%p 뒤처진, 실제로 살 수 없는 벤치마크였다.
+-- **교훈: 벤치마크도 '투자 가능한가'를 물어야 한다. EW 를 이겨도 SPY 에 지면 의미 없다.**
 --
 -- 사용법 (로컬에서 ssh 파이프)
 --   psql "$DATABASE_URL" -v mkt="'US'" -v days=90 -f - < scripts/net_alpha_experiment.sql
@@ -41,6 +49,13 @@
 \else
   \set days 90
 \endif
+-- 보유기간: rcol/acol 로 7d(기본) 또는 30d 지표를 고른다.
+-- 왕복 비용은 보유기간과 무관하게 1회 — 30d 는 같은 비용을 더 긴 알파로 갚는 구조다.
+\if :{?rcol}
+\else
+  \set rcol return_7d
+  \set acol alpha_7d
+\endif
 
 \echo '=== 대상 ==='
 SELECT :mkt AS 시장, :days AS 창일수;
@@ -49,14 +64,14 @@ SELECT :mkt AS 시장, :days AS 창일수;
 CREATE TEMP TABLE obs AS
 WITH base AS (
   SELECT r.stock_id, r.score, rr.id AS run_id, rr.executed_at::date AS d,
-         res.return_7d AS ret, res.alpha_7d AS alp
+         res.:"rcol" AS ret, res.:"acol" AS alp
   FROM recommendations r
   JOIN recommendation_runs rr ON rr.id = r.recommendation_run_id
   JOIN recommendation_results res ON res.recommendation_id = r.id
   WHERE rr.market_code = :mkt
     AND rr.executed_at >= now() - make_interval(days => (:days)::int)
-    AND res.return_7d IS NOT NULL AND res.alpha_7d IS NOT NULL
-    AND abs(res.return_7d) <= 1.0
+    AND res.:"rcol" IS NOT NULL AND res.:"acol" IS NOT NULL
+    AND abs(res.:"rcol") <= 1.0
 )
 SELECT base.*, p.close * p.volume AS tv
 FROM base
