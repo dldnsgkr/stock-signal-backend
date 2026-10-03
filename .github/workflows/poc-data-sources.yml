@@ -1,0 +1,47 @@
+# 서버리스 마이그레이션 0단계 PoC — GitHub Actions 러너에서 데이터 소스가 응답하는가.
+# 최대 리스크 선검증: yfinance(야후)·KRX 가 러너 IP 대역을 차단하면 설계가 성립하지 않는다.
+name: PoC data sources
+on: workflow_dispatch
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip -q install yfinance pykrx pandas
+      - name: yfinance 배치 수집 (파이프라인과 같은 100종목 배치 형태 x2)
+        run: |
+          python - <<'PYEOF'
+          import time, yfinance as yf
+          batch = ("AAPL MSFT NVDA TSLA AMZN GOOGL META AVGO BRK-B JPM V UNH XOM LLY MA HD PG COST"
+                   " ABBV MRK CRM AMD NFLX KO PEP TMO WMT CSCO MCD ACN ADBE LIN ABT DHR INTC VZ"
+                   " CMCSA PFE NKE TXN QCOM PM UPS RTX HON AMGN IBM GE CAT LOW BA SPGI UNP AMAT"
+                   " SBUX PLD T BLK GS ISRG MDLZ DE LMT SYK ADI BKNG TJX MMC GILD VRTX ADP C CI"
+                   " SCHW ZTS CB MO FI SO EQIX DUK PGR AON ITW BSX CL NOC MU WM ICE SNPS HUM"
+                   " ORLY SHW CME MCK TGT FDX EMR PSA KLAC").split()
+          for i in range(2):
+              t0 = time.time()
+              df = yf.download(batch, period="5d", progress=False, group_by="ticker", threads=True)
+              ok = df is not None and not df.empty
+              print(f"batch{i+1}: {len(batch)}종목 rows={0 if df is None else len(df)} "
+                    f"({time.time()-t0:.1f}s) ok={ok}")
+              assert ok, "yfinance 러너에서 응답 없음/차단"
+          print("YFINANCE_POC_PASS")
+          PYEOF
+      - name: pykrx 로그인 + 수급 1구간 (KRX secrets 설정 시에만)
+        env:
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
+        if: ${{ secrets.KRX_ID != '' }}
+        run: |
+          python - <<'PYEOF'
+          from pykrx.website.krx.market.core import 투자자별_순매수상위종목
+          df = 투자자별_순매수상위종목().fetch("20261001", "20261002", "STK", "9000")
+          n = 0 if df is None else len(df)
+          print("krx rows:", n)
+          assert n > 100, "KRX 러너에서 로그인/수집 실패"
+          print("KRX_POC_PASS")
+          PYEOF
