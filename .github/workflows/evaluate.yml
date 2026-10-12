@@ -1,0 +1,69 @@
+# 성과 평가 + 보존 창 정리 — EC2 의 15:00 UTC 평가 cron 대체.
+# 평가(EW_INDEX 재구축 + 수익률/알파) 후 Neon 무료 한도 유지용 정리를 돌린다.
+name: evaluate
+
+on:
+  schedule:
+    - cron: '0 15 * * *'   # 매일 00:00 KST (EC2 스케줄러와 동일)
+  workflow_dispatch:
+
+concurrency:
+  group: evaluate
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+    env:
+      REDIS_URL: redis://localhost:6379
+      ANALYSIS_SERVICE_URL: http://localhost:8000
+      VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+      VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+      VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+    steps:
+      - name: DB 주소 준비 (직결)
+        env:
+          NEON_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          if [ -z "$NEON_URL" ]; then
+            echo "::error::NEON_DATABASE_URL secret 이 없습니다"; exit 1
+          fi
+          echo "DATABASE_URL=${NEON_URL/-pooler/}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C apps/api prisma:generate
+      - run: pnpm -C apps/api build
+
+      - name: worker 기동   # 평가는 분석서비스 불필요 (가격·지수는 DB 에서 계산)
+        run: |
+          nohup node apps/api/dist/main.worker.js > /tmp/worker.log 2>&1 &
+          for i in $(seq 1 15); do
+            grep -q "Worker process started" /tmp/worker.log && { echo "worker OK"; exit 0; }
+            sleep 2
+          done
+          echo "::error::worker 기동 실패"; tail -50 /tmp/worker.log; exit 1
+
+      - name: 평가 실행 (완주 대기)
+        working-directory: apps/api
+        run: node scripts/run-queue-job.js evaluate-recommendations evaluate '{}' 75
+
+      - name: 보존 창 정리 (Neon 512MB 유지)
+        run: |
+          sudo apt-get install -y -q postgresql-client > /dev/null
+          psql "$DATABASE_URL" -f apps/api/scripts/neon-retention.sql
+
+      - name: 로그 (항상)
+        if: always()
+        run: |
+          echo "===== worker 마지막 120줄 ====="; tail -120 /tmp/worker.log || true

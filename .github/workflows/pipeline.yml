@@ -1,0 +1,109 @@
+# 서버리스 파이프라인 — EC2 대체. 기존 코드를 그대로 러너 안에서 돌린다:
+# Redis(서비스 컨테이너) + analysis(FastAPI) + worker(NestJS) 를 띄우고
+# Bull 큐에 run-pipeline 잡 하나를 넣고 완주를 기다린다. DB 는 Neon.
+#
+# 필요 secrets: NEON_DATABASE_URL (필수), KRX_ID/KRX_PW (KR 수급),
+#               VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT (웹푸시 — 없으면 푸시만 비활성)
+name: pipeline
+
+on:
+  schedule:
+    - cron: '30 7 * * 1-5'    # KR — 16:30 KST (EC2 스케줄러와 동일)
+    - cron: '30 21 * * 1-5'   # US — 21:30 UTC
+  workflow_dispatch:
+    inputs:
+      market:
+        description: '시장 (KR | US)'
+        required: true
+        type: choice
+        options: [KR, US]
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+    env:
+      REDIS_URL: redis://localhost:6379
+      ANALYSIS_SERVICE_URL: http://localhost:8000
+      KRX_ID: ${{ secrets.KRX_ID }}
+      KRX_PW: ${{ secrets.KRX_PW }}
+      VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+      VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+      VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+    steps:
+      - name: DB 주소 준비 (벌크 작업은 직결 — 풀러 경유 금지)
+        env:
+          NEON_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          if [ -z "$NEON_URL" ]; then
+            echo "::error::NEON_DATABASE_URL secret 이 없습니다 — gh secret set NEON_DATABASE_URL"
+            exit 1
+          fi
+          echo "DATABASE_URL=${NEON_URL/-pooler/}" >> "$GITHUB_ENV"
+
+      - name: 시장 결정 (스케줄은 UTC 시각으로, 수동은 입력으로)
+        run: |
+          if [ -n "${{ github.event.inputs.market }}" ]; then
+            MARKET="${{ github.event.inputs.market }}"
+          elif [ "$(date -u +%H)" -lt 12 ]; then
+            MARKET=KR
+          else
+            MARKET=US
+          fi
+          echo "MARKET=$MARKET" >> "$GITHUB_ENV"
+          echo "시장: $MARKET"
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4   # version 지정 금지 — packageManager 필드와 충돌
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C apps/api prisma:generate
+      - run: pnpm -C apps/api build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/analysis-service/requirements.txt
+      - run: pip install -r apps/analysis-service/requirements.txt
+
+      - name: analysis 서비스 기동
+        working-directory: apps/analysis-service
+        run: |
+          nohup python -m uvicorn main:app --host 127.0.0.1 --port 8000 > /tmp/analysis.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health > /dev/null && { echo "analysis OK"; exit 0; }
+            sleep 2
+          done
+          echo "::error::analysis 기동 실패"; tail -50 /tmp/analysis.log; exit 1
+
+      - name: worker 기동
+        run: |
+          nohup node apps/api/dist/main.worker.js > /tmp/worker.log 2>&1 &
+          for i in $(seq 1 15); do
+            grep -q "Worker process started" /tmp/worker.log && { echo "worker OK"; exit 0; }
+            sleep 2
+          done
+          echo "::error::worker 기동 실패"; tail -50 /tmp/worker.log; exit 1
+
+      - name: 파이프라인 실행 (완주 대기)
+        working-directory: apps/api
+        run: node scripts/run-queue-job.js run-pipeline run "{\"market\":\"$MARKET\"}" 135
+
+      - name: 로그 (항상)
+        if: always()
+        run: |
+          echo "===== worker 마지막 120줄 ====="; tail -120 /tmp/worker.log || true
+          echo "===== analysis 마지막 40줄 ====="; tail -40 /tmp/analysis.log || true
