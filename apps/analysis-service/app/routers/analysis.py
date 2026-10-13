@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import math
+import os
 import time
 import datetime
 import requests as _requests
@@ -11,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from pydantic import BaseModel
 from typing import List, Optional
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.models.db_models import Stock, Market, PriceDaily
 from app.engine.feature_builder import build_features
 from app.engine.scorer import (
@@ -44,6 +46,13 @@ logger = logging.getLogger(__name__)
 #    옛 모델과 새 모델이 한 덩어리로 섞이고, 반사실 재채점의 유효 구간 경계도 잃는다.
 MODEL_VERSION = "ensemble_v2.2"
 
+# 종목별 피처 빌드는 DB 왕복이 많아, 원격 DB(Neon/Actions)에서는 순차 처리 시
+# 왕복 지연이 종목 수만큼 곱해진다(2026-10-13 실측: KR 스코어링이 EC2 3분 →
+# Actions 러너에서 10분 timeout 초과). 한정 동시성으로 왕복을 겹친다.
+# pandas 계산은 단일 스레드에서 직렬이므로 CPU 사용은 순차 처리와 같다 —
+# 겹치는 건 I/O 뿐이라 localhost DB(EC2)에서도 부작용이 없다.
+FEATURE_CONCURRENCY = int(os.getenv("FEATURE_CONCURRENCY", "8"))
+
 
 class GenerateSignalsRequest(BaseModel):
     market: str = "US"
@@ -58,22 +67,23 @@ async def generate_signals(body: GenerateSignalsRequest, db: AsyncSession = Depe
     )
     stocks = result.scalars().all()
 
-    recommendations = []
-    processed = 0
-    skipped = 0
+    # 한정 동시성 — 작업마다 독립 세션(AsyncSession 은 동시 사용 불가).
+    # 스코어링은 종목별 순수 함수라 결과는 순차 처리와 동일하다.
+    sem = asyncio.Semaphore(FEATURE_CONCURRENCY)
 
-    for stock in stocks:
-        features = await build_features(db, stock, market_code=body.market)
+    async def score_one(stock):
+        async with sem:
+            async with AsyncSessionLocal() as session:
+                features = await build_features(session, stock, market_code=body.market)
         if not features:
-            skipped += 1
-            continue
+            return None
 
         score_detail = calculate_total_score(features)
         action = determine_action(score_detail["total_score"])
         confidence = calculate_confidence(score_detail["total_score"], score_detail)
         reasons = generate_reasons(features, score_detail, action)
 
-        recommendations.append({
+        return {
             "stockId": stock.id,
             "symbol": stock.symbol,
             "action": action,
@@ -89,8 +99,12 @@ async def generate_signals(body: GenerateSignalsRequest, db: AsyncSession = Depe
                 "macro": features["macro"],
                 "flow": features["flow"],
             },
-        })
-        processed += 1
+        }
+
+    results = await asyncio.gather(*(score_one(stock) for stock in stocks))
+    recommendations = [r for r in results if r is not None]
+    processed = len(recommendations)
+    skipped = len(stocks) - processed
 
     recommendations.sort(key=lambda x: x["score"], reverse=True)
 
@@ -128,29 +142,34 @@ async def generate_sell_signals(body: GenerateSellSignalsRequest, db: AsyncSessi
     # 같은 종목의 미결제 BUY 가 여러 건이면 feature 계산을 반복하지 않는다.
     # US 는 90일 미결제 BUY 가 수만 건(유니크 종목의 수 배)이라, 건별 계산 시
     # 10분 넘게 걸려 워커 timeout 으로 SELL 체크가 매일 실패했다.
-    stock_result_cache: dict[int, dict | None] = {}
+    # 유니크 종목 평가는 generate_signals 와 같은 이유로 한정 동시성으로 돌린다.
+    sem = asyncio.Semaphore(FEATURE_CONCURRENCY)
+
+    async def eval_stock(stock_id: int):
+        async with sem:
+            async with AsyncSessionLocal() as session:
+                stock = await session.get(Stock, stock_id)
+                if not stock:
+                    return stock_id, None
+                features = await build_features(session, stock, market_code=body.market)
+        if not features:
+            return stock_id, None
+        score_detail = calculate_total_score(features)
+        current_score = score_detail["total_score"]
+        if current_score < WATCH_THRESHOLD:
+            return stock_id, {
+                "current_score": current_score,
+                "exit_price": features["current_price"],
+                "reasons": generate_reasons(features, score_detail, "SELL"),
+            }
+        return stock_id, {"current_score": current_score}  # SELL 아님 표식
+
+    unique_ids = list({rec.stock_id for rec in body.buy_recommendations})
+    pairs = await asyncio.gather(*(eval_stock(sid) for sid in unique_ids))
+    stock_result_cache: dict[int, dict | None] = dict(pairs)
 
     for rec in body.buy_recommendations:
-        if rec.stock_id in stock_result_cache:
-            cached = stock_result_cache[rec.stock_id]
-        else:
-            cached = None
-            stock = await db.get(Stock, rec.stock_id)
-            if stock:
-                features = await build_features(db, stock, market_code=body.market)
-                if features:
-                    score_detail = calculate_total_score(features)
-                    current_score = score_detail["total_score"]
-                    if current_score < WATCH_THRESHOLD:
-                        cached = {
-                            "current_score": current_score,
-                            "exit_price": features["current_price"],
-                            "reasons": generate_reasons(features, score_detail, "SELL"),
-                        }
-                    else:
-                        cached = {"current_score": current_score}  # SELL 아님 표식
-            stock_result_cache[rec.stock_id] = cached
-
+        cached = stock_result_cache.get(rec.stock_id)
         if cached and "exit_price" in cached:
             sell_signals.append({
                 "buy_recommendation_id": rec.id,

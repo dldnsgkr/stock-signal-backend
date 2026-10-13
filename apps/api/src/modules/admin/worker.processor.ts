@@ -280,7 +280,9 @@ export class RecommendationProcessor {
       const analysisUrl = this.config.get('ANALYSIS_SERVICE_URL', 'http://localhost:8000');
       let responseData: any;
       try {
-        responseData = await callAnalysis(`${analysisUrl}/analysis/generate-signals`, { market });
+        // 원격 DB(Neon/Actions) 에서는 피처 빌드 왕복이 길어질 수 있어 30분 허용
+        // (동시성 8 적용 후 실측은 수 분 — 이 타임아웃은 안전 여유다)
+        responseData = await callAnalysis(`${analysisUrl}/analysis/generate-signals`, { market }, 1800000);
       } catch (err) {
         throwForRetryPolicy(err, `generate-recommendations/${market}`);
       }
