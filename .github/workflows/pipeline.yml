@@ -7,9 +7,12 @@
 name: pipeline
 
 on:
+  # ⚠️ GitHub cron 은 정각·30분에 몰려 3~7.5시간씩 지연된다(2026-10-13~14 실측).
+  #    붐비지 않는 홀수 분으로 지연을 줄이고, 시장은 아래에서 '어느 cron 이 쐈는지'로 판정한다.
+  #    (마감 후 다음 개장까지 17.5시간이라 지연돼도 장중 데이터를 잡지는 않는다)
   schedule:
-    - cron: '30 7 * * 1-5'    # KR — 16:30 KST (EC2 스케줄러와 동일)
-    - cron: '30 21 * * 1-5'   # US — 21:30 UTC
+    - cron: '17 7 * * 1-5'    # KR — 장 마감(06:30 UTC) 47분 후
+    - cron: '43 20 * * 1-5'   # US — 장 마감(20:00 UTC) 43분 후
   workflow_dispatch:
     inputs:
       market:
@@ -49,14 +52,18 @@ jobs:
           fi
           echo "DATABASE_URL=${NEON_URL/-pooler/}" >> "$GITHUB_ENV"
 
-      - name: 시장 결정 (스케줄은 UTC 시각으로, 수동은 입력으로)
+      - name: 시장 결정 (스케줄은 '어느 cron 인지'로, 수동은 입력으로)
+        # ⚠️ 현재 시각으로 판정하지 말 것 — cron 지연으로 4번 연속 시장이 뒤바뀌었다
+        #    (US cron 이 자정 넘어 실행 → KR 장중 데이터로 KR 런 생성 등, 2026-10-13~14).
         run: |
           if [ -n "${{ github.event.inputs.market }}" ]; then
             MARKET="${{ github.event.inputs.market }}"
-          elif [ "$(date -u +%H)" -lt 12 ]; then
+          elif [ "${{ github.event.schedule }}" = "17 7 * * 1-5" ]; then
             MARKET=KR
-          else
+          elif [ "${{ github.event.schedule }}" = "43 20 * * 1-5" ]; then
             MARKET=US
+          else
+            echo "::error::알 수 없는 트리거: schedule='${{ github.event.schedule }}'"; exit 1
           fi
           echo "MARKET=$MARKET" >> "$GITHUB_ENV"
           echo "시장: $MARKET"
