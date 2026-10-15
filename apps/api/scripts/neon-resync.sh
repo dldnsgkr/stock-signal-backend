@@ -38,6 +38,7 @@ copy users "SELECT * FROM users" "users"
 copy macro_indicators "SELECT * FROM macro_indicators" "macro_indicators"
 copy financial_metrics "SELECT * FROM financial_metrics" "financial_metrics"
 copy quarterly_financials "SELECT * FROM quarterly_financials" "quarterly_financials"
+copy analyst_estimates "SELECT * FROM analyst_estimates" "analyst_estimates"
 
 # ── 추천 (90일, 스냅샷 치환) ─────────────────────────────────────────────
 copy recommendations \

@@ -19,6 +19,11 @@ async def collect_prices(
         select(Stock)
         .join(Market)
         .where(Market.code == market_code, Stock.is_active == True)
+        # ⚠️ ORDER BY 필수 — 워커가 offset 0,100,200... 으로 나눠 부르는데, 정렬이 없으면
+        # Postgres 가 배치마다 다른 순서를 줘 일부 종목은 안 받고 일부는 두 번 받는다.
+        # EC2 에선 행 순서가 우연히 안정적이라 드러나지 않다가, 새로 적재한 Neon 에서
+        # US 가격 최신일 커버리지가 87%→75% 로 빠졌다(2026-10-15, 1,286종목 누락).
+        .order_by(Stock.id)
         .offset(offset)
         .limit(limit)
     )

@@ -3,7 +3,8 @@ from datetime import datetime, date, timedelta
 import yfinance as yf
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, case
-from app.models.db_models import Stock, Market, FinancialMetrics, QuarterlyFinancials
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from app.models.db_models import Stock, Market, FinancialMetrics, QuarterlyFinancials, AnalystEstimate
 from app.collectors.financial_math import (
     PBR_MAX, PER_MAX, derive_ratio, extract_equity, safe_amount, safe_float,
 )
@@ -135,6 +136,10 @@ async def collect_financials(
             # 108개뿐이다(2026-08-03 측정). 즉 사실상 KR 전용이다.
             market_cap = safe_amount(info.get("marketCap"))
 
+            # 애널리스트 추정치 — 종목 상세의 Forward P/E·시나리오 표시용(스코어링 미사용).
+            # 같은 `info` 에 있으므로 추가 호출 없이 적재한다. 값이 하나라도 있을 때만.
+            await _upsert_estimates(db, stock.id, info)
+
             if per is None:
                 per = derive_ratio(market_cap, net_income, PER_MAX)
             if pbr is None and market_cap:
@@ -204,6 +209,25 @@ async def collect_financials(
     return {"collected": collected, "skipped": skipped, "errors": errors,
             "quarters_saved": quarters_saved, "total_in_batch": len(stocks),
             "pending": pending}
+
+
+async def _upsert_estimates(db: AsyncSession, stock_id: int, info: dict) -> None:
+    """yfinance info 의 애널리스트 추정치를 종목당 1행으로 upsert (표시 전용)."""
+    count = info.get("numberOfAnalystOpinions")
+    vals = {
+        "forward_eps": safe_float(info.get("forwardEps")),
+        "trailing_eps": safe_float(info.get("trailingEps")),
+        "trailing_pe": safe_float(info.get("trailingPE")),
+        "target_mean": safe_float(info.get("targetMeanPrice")),
+        "target_high": safe_float(info.get("targetHighPrice")),
+        "target_low": safe_float(info.get("targetLowPrice")),
+        "analyst_count": int(count) if isinstance(count, (int, float)) and count == count else None,
+    }
+    if all(v is None for v in vals.values()):
+        return
+    vals["updated_at"] = datetime.utcnow()
+    stmt = pg_insert(AnalystEstimate).values(stock_id=stock_id, **vals)
+    await db.execute(stmt.on_conflict_do_update(index_elements=["stock_id"], set_=vals))
 
 
 async def _upsert_quarterly(db: AsyncSession, stock_id: int, ticker) -> int:

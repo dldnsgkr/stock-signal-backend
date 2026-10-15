@@ -91,6 +91,25 @@ class QuarterlyFinancials(Base):
     __table_args__ = (UniqueConstraint("stock_id", "period_end"),)
 
 
+class AnalystEstimate(Base):
+    """애널리스트 추정치 스냅샷 (종목당 1행, 월 1회 갱신) — 종목 상세의 Forward P/E 목표가·
+    Bull/Base/Bear 시나리오용. 예전엔 화면 요청마다 yfinance `info` 를 실시간 호출했는데,
+    서버리스(Vercel)에는 yfinance 가 없어 재무 수집기가 이미 부르는 `info` 에서 함께 적재한다.
+    스코어링 미사용 — 표시 전용. 테이블은 수동 SQL 로 생성(Prisma 모델 없음 — Neon 에
+    prisma migrate 금지 원칙, serverless-migration-plan.md 참조).
+    """
+    __tablename__ = "analyst_estimates"
+    stock_id = Column(Integer, ForeignKey("stocks.id", ondelete="CASCADE"), primary_key=True)
+    forward_eps = Column(Numeric(20, 6))
+    trailing_eps = Column(Numeric(20, 6))
+    trailing_pe = Column(Numeric(20, 6))
+    target_mean = Column(Numeric(20, 4))
+    target_high = Column(Numeric(20, 4))
+    target_low = Column(Numeric(20, 4))
+    analyst_count = Column(Integer)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
 class NewsArticle(Base):
     __tablename__ = "news_articles"
     id = Column(Integer, primary_key=True)
