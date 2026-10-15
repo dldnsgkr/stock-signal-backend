@@ -44,7 +44,9 @@ logger = logging.getLogger(__name__)
 #       scorer._momentum_score 끝부분 참조. 3단계 검증 통과 후 2026-08-26 배포.
 # ⚠️ 스코어러를 바꾸면 **반드시 여기도 올릴 것.** 버전이 그대로면 성과 비교에서
 #    옛 모델과 새 모델이 한 덩어리로 섞이고, 반사실 재채점의 유효 구간 경계도 잃는다.
-MODEL_VERSION = "ensemble_v2.2"
+# v2.3: 뉴스 감성 조회에 30일 상한(feature_builder.NEWS_MAX_AGE_DAYS). 스코어러 무변경,
+#       피처 구성 변경이라 버전 경계를 남긴다. 성과 중립 검증됨(news_cap 30일 +0.01%p).
+MODEL_VERSION = "ensemble_v2.3"
 
 # 종목별 피처 빌드는 DB 왕복이 많아, 원격 DB(Neon/Actions)에서는 순차 처리 시
 # 왕복 지연이 종목 수만큼 곱해진다(2026-10-13 실측: KR 스코어링이 EC2 3분 →

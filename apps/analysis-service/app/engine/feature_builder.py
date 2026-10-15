@@ -167,6 +167,7 @@ def _build_news_features(news_rows: list) -> dict:
 REPORT_LAG_DAYS = 60
 YOY_TOLERANCE_DAYS = 45     # 1년 전 분기 매칭 허용 오차
 MACRO_MAX_STALE_DAYS = 7    # 거시지표 신선도 상한 — 장기 연휴를 감안해 가격과 같은 7일
+NEWS_MAX_AGE_DAYS = 30      # 뉴스 감성 조회 상한 — Neon 보존 창(neon-retention.sql)과 반드시 같게
 
 
 def _yoy_growth(series: list[tuple], as_of) -> Optional[float]:
@@ -279,7 +280,14 @@ async def build_features(db: AsyncSession, stock: Stock, market_code: str = "US"
             "pbr_relative": _f(fin.pbr) if fin else None,
         }
 
-        # 뉴스 — published_at과 relevance_score 포함해서 조회
+        # 뉴스 — published_at과 relevance_score 포함해서 조회.
+        #
+        # 30일 상한(ensemble_v2.3): 예전엔 날짜 제한 없이 '최근 30건' 이었다. 그러면 최근 뉴스가
+        # 없는 종목은 수개월 전 기사가 감성 점수를 정한다(가중평균이 정규화되므로 감쇠가 상쇄됨).
+        # 서버리스 이전에서 DB 보존 창이 30일이라 EC2 와 Neon 의 감성 점수가 평균 6.9점 갈렸다
+        # (2026-10-15 병행 대조, 3,929종목). 상한을 코드에 박아 두 환경을 일치시킨다.
+        # 성과 영향은 이미 검증됨: counterfactual_news_cap.py(30일) Δalpha +0.01%p — 중립.
+        news_cutoff = datetime.utcnow() - timedelta(days=NEWS_MAX_AGE_DAYS)
         news_result = await db.execute(
             select(
                 NewsArticle.sentiment_score,
@@ -288,6 +296,7 @@ async def build_features(db: AsyncSession, stock: Stock, market_code: str = "US"
             )
             .join(NewsArticle, NewsStockRelation.news_article_id == NewsArticle.id)
             .where(NewsStockRelation.stock_id == stock.id)
+            .where(NewsArticle.published_at >= news_cutoff)
             .order_by(desc(NewsArticle.published_at))
             .limit(30)
         )

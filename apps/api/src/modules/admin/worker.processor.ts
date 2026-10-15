@@ -303,14 +303,18 @@ export class RecommendationProcessor {
         });
       }
 
-      // 오늘 같은 마켓 run이 이미 있으면 재사용 (중복 방지)
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
+      // 같은 세션의 재시도면 기존 run 재사용 (중복 방지).
+      // ⚠️ '오늘 0시 이후' 로 판정하지 말 것 — GitHub cron 이 3~7.5시간 지연돼 US 런이
+      // 자정(UTC)을 넘기면 다음 날짜로 찍히고, 그날 정시 US 런이 그걸 '오늘 런' 으로 보고
+      // 덮어써 한 세션이 통째로 사라진다(2026-10-15 실제 발생 직전에 발견).
+      // 같은 세션 재시도는 몇 시간 안에 오고, 다음 세션은 최소 16.5시간 뒤(24h − 지연 7.5h)
+      // 이므로 10시간 창이면 둘을 구분한다.
+      const SAME_SESSION_WINDOW_MS = 10 * 3600 * 1000;
       const existingRun = await this.prisma.recommendationRun.findFirst({
         where: {
           marketCode: market,
           modelVersionId: mv.id,
-          executedAt: { gte: todayStart },
+          executedAt: { gte: new Date(Date.now() - SAME_SESSION_WINDOW_MS) },
         },
         orderBy: { executedAt: 'desc' },
       });
