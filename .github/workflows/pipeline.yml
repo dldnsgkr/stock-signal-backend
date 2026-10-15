@@ -20,6 +20,21 @@ on:
         required: true
         type: choice
         options: [KR, US]
+      job:
+        description: '실행할 작업 (관리자 화면의 개별 버튼). 기본은 전체 파이프라인'
+        required: false
+        default: run-pipeline
+        type: choice
+        options:
+          - run-pipeline
+          - collect-stock-list
+          - collect-prices
+          - collect-news
+          - collect-financials
+          - collect-macro
+          - collect-investor-flow
+          - generate-recommendations
+          - check-sell-signals
 
 concurrency:
   group: pipeline
@@ -105,9 +120,21 @@ jobs:
           done
           echo "::error::worker 기동 실패"; tail -50 /tmp/worker.log; exit 1
 
-      - name: 파이프라인 실행 (완주 대기)
+      - name: 작업 실행 (완주 대기)
         working-directory: apps/api
-        run: node scripts/run-queue-job.js run-pipeline run "{\"market\":\"$MARKET\"}" 135
+        # 스케줄 실행은 항상 전체 파이프라인. 수동 실행은 관리자 화면이 고른 개별 작업도 가능 —
+        # 큐 이름은 워커의 Bull 큐와 같고, 잡 이름만 큐별로 다르다(admin.service 의 trigger* 와 동일).
+        run: |
+          JOB="${{ github.event.inputs.job || 'run-pipeline' }}"
+          case "$JOB" in
+            run-pipeline)              NAME=run ;;
+            generate-recommendations)  NAME=generate ;;
+            check-sell-signals)        NAME=check ;;
+            collect-*)                 NAME=collect ;;
+            *) echo "::error::알 수 없는 작업: $JOB"; exit 1 ;;
+          esac
+          echo "작업: $JOB/$NAME 시장: $MARKET"
+          node scripts/run-queue-job.js "$JOB" "$NAME" "{\"market\":\"$MARKET\"}" 135
 
       - name: 로그 (항상)
         if: always()
