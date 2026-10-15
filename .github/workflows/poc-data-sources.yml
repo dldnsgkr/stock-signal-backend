@@ -34,6 +34,22 @@ jobs:
               assert ok, "yfinance 러너에서 응답 없음/차단"
           print("YFINANCE_POC_PASS")
           PYEOF
+      - name: 최신 봉 누락 진단 (같은 종목을 history 로 3회 반복 조회)
+        run: |
+          python - <<'PYEOF'
+          import time, datetime as dt, yfinance as yf
+          now = dt.datetime.utcnow()
+          start = (now - dt.timedelta(days=10)).strftime("%Y-%m-%d")
+          end = (now + dt.timedelta(days=1)).strftime("%Y-%m-%d")
+          syms = ["NVDA","AAPL","MSFT","AMZN","GOOGL","META","TSLA","AVGO","JPM","V"]
+          for attempt in range(3):
+              last = {}
+              for s in syms:
+                  df = yf.Ticker(s).history(start=start, end=end, auto_adjust=True)
+                  last[s] = str(df.index[-1].date()) if len(df) else "EMPTY"
+              print(f"attempt{attempt+1} utc={dt.datetime.utcnow():%H:%M:%S}", last)
+              time.sleep(20)
+          PYEOF
       - name: pykrx 로그인 + 수급 1구간 (KRX secrets 설정 시에만)
         if: ${{ env.KRX_ID != '' }}
         run: |
