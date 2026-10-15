@@ -1,0 +1,41 @@
+# 주간 DB 백업 — EC2 의 backup_db.sh cron 대체.
+# ⚠️ 공개 저장소라 아티팩트는 GitHub 로그인한 누구나 받을 수 있다 — 덤프에는 사용자 이메일·
+#    푸시 구독이 들어 있으므로 **반드시 암호화**해서 올린다(BACKUP_PASSPHRASE secret).
+# 복원: gpg -d stocksignal_*.sql.gz.gpg | gunzip | psql "$DATABASE_URL"
+name: backup
+
+on:
+  schedule:
+    - cron: '23 19 * * 0'   # 매주 월 04:23 KST
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 준비 확인
+        env:
+          PASS: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          if [ -z "$PASS" ]; then echo "::error::BACKUP_PASSPHRASE secret 이 없습니다 — 암호화 없이는 백업을 올리지 않는다"; exit 1; fi
+      - name: pg_dump → gzip → gpg 대칭 암호화
+        env:
+          NEON_URL: ${{ secrets.NEON_DATABASE_URL }}
+          PASS: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          sudo apt-get install -y -q postgresql-client-common > /dev/null
+          # Neon 은 PG 18 — 러너 기본 pg_dump 가 낮으면 거부하므로 같은 메이저를 설치
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -q > /dev/null && sudo apt-get install -y -q postgresql-client-18 > /dev/null
+          F=stocksignal_$(date -u +%Y%m%d).sql.gz.gpg
+          /usr/lib/postgresql/18/bin/pg_dump "${NEON_URL/-pooler/}" | gzip -6 \
+            | gpg --batch --yes --pinentry-mode loopback --passphrase "$PASS" --symmetric --cipher-algo AES256 -o "$F"
+          ls -lh "$F"
+          echo "FILE=$F" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE }}
+          path: ${{ env.FILE }}
+          retention-days: 35

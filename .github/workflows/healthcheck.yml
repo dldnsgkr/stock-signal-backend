@@ -1,0 +1,33 @@
+# 일일 헬스체크 — EC2 API 프로세스의 @Cron(평일 09:00 KST) 대체.
+# 파이프라인 연속 미실행·시그널/가격 미갱신·DB 용량을 점검해 문제 있으면 웹푸시로 알린다.
+# (US 8일·KR 18일 장애를 아무도 몰랐던 재발 방지 — CLAUDE.md '실패 알림은 며칠째인지' 절)
+name: healthcheck
+
+on:
+  schedule:
+    - cron: '7 0 * * 1-5'   # 평일 09:07 KST (붐비는 정각 회피)
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+      VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+      VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+    steps:
+      - name: DB 주소 준비 (직결)
+        env:
+          NEON_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: echo "DATABASE_URL=${NEON_URL/-pooler/}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C apps/api prisma:generate
+      - run: pnpm -C apps/api build
+      - run: node apps/api/dist/main.healthcheck.js

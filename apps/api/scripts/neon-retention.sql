@@ -34,7 +34,14 @@ DELETE FROM notification_log WHERE created_at < now() - interval '30 days';
 
 COMMIT;
 
-VACUUM (ANALYZE) recommendations, recommendation_results, price_daily,
-  investor_flow_daily, news_articles, sell_signals;
+-- ⚠️ 일반 VACUUM 은 지운 공간을 '재사용 가능' 으로만 표시하고 파일은 줄이지 않는다 —
+-- 그래서 pg_database_size 가 계속 불어 2026-10-15 에 517MB 로 무료 한도(512MB)를 넘었다.
+-- 큰 테이블은 매일 VACUUM FULL 로 재작성한다(합계 1~2분, 그동안 해당 테이블 쓰기는 대기).
+-- price_daily 는 인덱스가 데이터보다 커져 있었다(77MB vs 75MB) — 재작성으로 인덱스도 재생성된다.
+VACUUM FULL ANALYZE recommendations;
+VACUUM FULL ANALYZE price_daily;
+VACUUM FULL ANALYZE recommendation_results;
+VACUUM FULL ANALYZE sell_signals;
+VACUUM (ANALYZE) investor_flow_daily, news_articles;
 
 SELECT pg_size_pretty(pg_database_size(current_database())) AS db_size;

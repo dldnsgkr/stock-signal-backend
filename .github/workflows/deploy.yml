@@ -1,9 +1,10 @@
 name: Deploy to EC2
 
+# ⚠️ 서버리스 이전으로 EC2 는 중지 예정(2026-10-15). 태그 푸시로 자동 배포하지 않는다 —
+#    파이프라인은 Actions(pipeline.yml)가 매번 main 을 체크아웃해 돈다. EC2 를 다시 켜서
+#    배포해야 할 때만 수동 실행.
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 jobs:
   # 배포 전 게이트: API 빌드 + 스코어러 테스트가 통과해야 deploy 가 돈다.
