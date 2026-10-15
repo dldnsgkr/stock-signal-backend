@@ -110,6 +110,11 @@ async def collect_investor_flow(
                             "investor_type": inv_name,
                             "net_buy_value": net_val,
                             "net_buy_volume": net_vol,
+                            # 총 매수·매도 대금 — 외국인 동향 화면의 '매수 X · 매도 Y' 용.
+                            # 예전엔 화면이 KRX 를 실시간 호출해 받았는데, 서버리스 이전으로
+                            # DB 에서 읽게 되면서 함께 적재한다(같은 응답에 이미 있다).
+                            "buy_value": _to_int(r.get("BID_TRDVAL")),
+                            "sell_value": _to_int(r.get("ASK_TRDVAL")),
                         }
                     )
 
@@ -118,12 +123,16 @@ async def collect_investor_flow(
                         await db.execute(
                             text("""
                                 INSERT INTO investor_flow_daily
-                                    (stock_id, trade_date, investor_type, net_buy_value, net_buy_volume)
+                                    (stock_id, trade_date, investor_type, net_buy_value, net_buy_volume,
+                                     buy_value, sell_value)
                                 VALUES
-                                    (:stock_id, :trade_date, :investor_type, :net_buy_value, :net_buy_volume)
+                                    (:stock_id, :trade_date, :investor_type, :net_buy_value, :net_buy_volume,
+                                     :buy_value, :sell_value)
                                 ON CONFLICT (stock_id, trade_date, investor_type) DO UPDATE SET
                                     net_buy_value  = EXCLUDED.net_buy_value,
-                                    net_buy_volume = EXCLUDED.net_buy_volume
+                                    net_buy_volume = EXCLUDED.net_buy_volume,
+                                    buy_value      = EXCLUDED.buy_value,
+                                    sell_value     = EXCLUDED.sell_value
                             """),
                             rows,
                         )
@@ -138,5 +147,29 @@ async def collect_investor_flow(
 
     if unmatched:
         logger.info(f"Unmatched symbols (비활성/미등록): {len(unmatched)}개")
+
+    # 시장 전체 투자자별 일별 순매수 합계 — 투자자 동향 화면용(market_investor_daily).
+    # 종목별 행은 Neon 무료 한도 때문에 30일만 보존하지만, 이 집계는 하루 6행이라 영구 보존해
+    # '3달' 조회가 가능하다. 예전엔 화면이 KRX 를 실시간 호출했다(서버리스 이전으로 대체).
+    # 기타법인은 저장하지 않는다 — 전체 순매수 합은 0 이므로 −(기관+외국인+개인) 으로 복원된다.
+    if collected and dates:
+        try:
+            await db.execute(text("""
+                INSERT INTO market_investor_daily (trade_date, market, investor_type, net_buy_value)
+                SELECT f.trade_date,
+                       CASE WHEN s.symbol LIKE '%.KS' THEN 'KOSPI' ELSE 'KOSDAQ' END,
+                       f.investor_type, SUM(f.net_buy_value)
+                FROM investor_flow_daily f JOIN stocks s ON s.id = f.stock_id
+                WHERE f.trade_date >= :since
+                  AND (s.symbol LIKE '%.KS' OR s.symbol LIKE '%.KQ')
+                GROUP BY 1, 2, 3
+                ON CONFLICT (trade_date, market, investor_type)
+                DO UPDATE SET net_buy_value = EXCLUDED.net_buy_value
+            """), {"since": datetime.strptime(min(dates), "%Y%m%d").date()})
+            await db.commit()
+        except Exception as e:
+            logger.error(f"market_investor_daily 집계 실패: {e}")
+            await db.rollback()
+
     logger.info(f"Investor flow done: {collected} rows, {errors} errors, {len(dates)} days")
     return {"collected": collected, "errors": errors, "days": len(dates)}
