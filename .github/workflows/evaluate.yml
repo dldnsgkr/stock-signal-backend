@@ -14,7 +14,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     services:
       redis:
         image: redis:7
@@ -56,9 +56,13 @@ jobs:
 
       - name: 평가 실행 (완주 대기)
         working-directory: apps/api
-        run: node scripts/run-queue-job.js evaluate-recommendations evaluate '{}' 75
+        # 평소 35~40분이지만 평가 대상이 몰리면(대조용 수동 런이 겹친 10-15) 75분을 넘겼다.
+        # 결과는 건별 upsert 라 다음 날 이어서 하지만, 여유를 4배로 둔다.
+        run: node scripts/run-queue-job.js evaluate-recommendations evaluate '{}' 160
 
       - name: 보존 창 정리 (Neon 512MB 유지)
+        # 평가가 실패해도 정리는 돌린다 — 건너뛰면 그날 용량이 그대로 불어난다
+        if: ${{ !cancelled() }}
         run: |
           sudo apt-get install -y -q postgresql-client > /dev/null
           psql "$DATABASE_URL" -f apps/api/scripts/neon-retention.sql
