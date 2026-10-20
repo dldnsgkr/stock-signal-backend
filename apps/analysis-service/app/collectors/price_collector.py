@@ -84,6 +84,14 @@ async def collect_prices(
                             open = EXCLUDED.open, high = EXCLUDED.high,
                             low = EXCLUDED.low, close = EXCLUDED.close,
                             volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close
+                        -- 매 런 90일치를 다시 받으므로 값이 같은 행까지 UPDATE 하면 런마다 수십만
+                        -- 행이 새로 써져 죽은 행이 쌓인다(Neon 512MB 한도에서 price_daily 115→139MB).
+                        -- 소급 조정(배당·스플릿)이나 당일 거래량 보정처럼 바뀐 행만 쓴다.
+                        WHERE (price_daily.open, price_daily.high, price_daily.low,
+                               price_daily.close, price_daily.volume, price_daily.adj_close)
+                              IS DISTINCT FROM
+                              (EXCLUDED.open, EXCLUDED.high, EXCLUDED.low,
+                               EXCLUDED.close, EXCLUDED.volume, EXCLUDED.adj_close)
                     """),
                     rows,
                 )
