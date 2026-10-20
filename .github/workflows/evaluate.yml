@@ -60,6 +60,57 @@ jobs:
         # 결과는 건별 upsert 라 다음 날 이어서 하지만, 여유를 4배로 둔다.
         run: node scripts/run-queue-job.js evaluate-recommendations evaluate '{}' 160
 
+      # 피처 스냅샷은 반사실 재채점(이 프로젝트의 검증 방법)의 원료라 버리면 안 되지만,
+      # 거래일마다 ~10MB 라 Neon 512MB 에 둘 수 없다. 7일 지난 분을 내보내 아티팩트로 올리고,
+      # 업로드가 성공했을 때만 DB 에서 '{}' 로 비운다.
+      - name: 피처 스냅샷 내보내기
+        id: snapexp
+        if: ${{ !cancelled() }}
+        run: |
+          sudo apt-get install -y -q postgresql-client > /dev/null
+          CUTOFF=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%S)
+          echo "CUTOFF=$CUTOFF" >> "$GITHUB_ENV"
+          F="snapshots_$(date -u +%Y%m%d).tsv.gz"
+          echo "SNAP_FILE=$F" >> "$GITHUB_ENV"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "COPY (
+              SELECT id, recommendation_run_id, stock_id, recommended_at, action, score, feature_snapshot_json
+              FROM recommendations
+              WHERE recommended_at < '$CUTOFF' AND feature_snapshot_json <> '{}'::jsonb
+              ORDER BY id) TO STDOUT" | gzip > "$F"
+          N=$(gunzip -c "$F" | wc -l)
+          echo "SNAP_ROWS=$N" >> "$GITHUB_ENV"
+          echo "내보낸 스냅샷 ${N}행 ($(du -h "$F" | cut -f1)), 기준 < $CUTOFF"
+
+      - name: 피처 스냅샷 업로드
+        id: snapup
+        if: ${{ !cancelled() && steps.snapexp.outcome == 'success' && env.SNAP_ROWS != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.SNAP_FILE }}
+          path: ${{ env.SNAP_FILE }}
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: 피처 스냅샷 DB 에서 비우기 (업로드 성공 시에만)
+        if: ${{ !cancelled() && steps.snapup.outcome == 'success' }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v expected="$SNAP_ROWS" <<SQL
+          BEGIN;
+          SELECT count(*) AS n FROM recommendations
+            WHERE recommended_at < '$CUTOFF' AND feature_snapshot_json <> '{}'::jsonb \gset
+          SELECT (:n = :expected) AS ok \gset
+          \if :ok
+            UPDATE recommendations SET feature_snapshot_json = '{}'
+              WHERE recommended_at < '$CUTOFF' AND feature_snapshot_json <> '{}'::jsonb;
+            COMMIT;
+          \else
+            \echo 행 수 불일치 — 내보낸 :expected 행 vs 현재 :n 행. 비우지 않는다.
+            ROLLBACK;
+            SELECT 1/0 AS row_count_mismatch;
+          \endif
+          SQL
+
       - name: 보존 창 정리 (Neon 512MB 유지)
         # 평가가 실패해도 정리는 돌린다 — 건너뛰면 그날 용량이 그대로 불어난다
         if: ${{ !cancelled() }}
