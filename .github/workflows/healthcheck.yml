@@ -5,7 +5,9 @@ name: healthcheck
 
 on:
   schedule:
-    - cron: '7 0 * * 1-5'   # 평일 09:07 KST (붐비는 정각 회피)
+    # 평일 20:07 KST. US 런이 03:13 UTC(다음날 새벽)로 옮겨가서, 아침에 돌면 화요일마다
+    # 월요일 세션 런이 아직 없어 '2영업일 미실행' 오경보가 난다. 저녁이면 KR·US 당일분 이후다.
+    - cron: '7 11 * * 1-5'
   workflow_dispatch:
 
 jobs:
